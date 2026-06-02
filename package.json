@@ -1,0 +1,20 @@
+{
+  "name": "orbiters.unitgit",
+  "displayName": "Unit Git",
+  "version": "0.1.0",
+  "license": "LicenseRef-Orbiters-Proprietary",
+  "unity": "2022.3",
+  "description": "Unity editor Git wrapper for VRChat Unity projects.",
+  "type": "tool",
+  "url": "https://github.com/blackorbit1/orbiters-vpm/raw/refs/heads/main/unitgit.0.1.0.zip",
+  "dependencies": {},
+  "gitDependencies": {},
+  "vpmDependencies": {},
+  "author": {
+    "name": "blackorbit",
+    "email": "blackorbit.eclaire@gmail.com",
+    "url": "https://orbiters.cc"
+  },
+  "legacyFolders": {},
+  "legacyFiles": {}
+}

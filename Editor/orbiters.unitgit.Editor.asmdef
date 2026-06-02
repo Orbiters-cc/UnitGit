@@ -1,0 +1,16 @@
+{
+  "name": "orbiters.unitgit.Editor",
+  "references": [
+    "orbiters.unitgit"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": true,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "defineConstraints": [],
+  "optionalUnityReferences": []
+}

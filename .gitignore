@@ -1,0 +1,13 @@
+*.meta
+!Editor.meta
+!Editor/**/*.meta
+!Runtime.meta
+!Runtime/**/*.meta
+!LICENSE.md.meta
+!README.md.meta
+!package.json.meta
+.agents/
+.codex/
+.idea/
+packageFiles
+packageMetaFiles

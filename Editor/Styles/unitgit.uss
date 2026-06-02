@@ -1,0 +1,1155 @@
+.unitgit-root {
+    background-color: #303030;
+    color: #dfe7f5;
+    flex-grow: 1;
+    overflow: hidden;
+}
+
+.unitgit-topbar {
+    height: 42px;
+    min-height: 42px;
+    flex-direction: row;
+    align-items: center;
+    background-color: #303030;
+    border-bottom-width: 1px;
+    border-bottom-color: #24272c;
+    padding-left: 12px;
+    padding-right: 10px;
+}
+
+.unitgit-title {
+    color: #ffffff;
+    -unity-font-style: bold;
+    font-size: 13px;
+    margin-right: 20px;
+}
+
+.unitgit-tab {
+    height: 28px;
+    min-height: 28px;
+    flex-direction: row;
+    align-items: center;
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    border-radius: 4px;
+    color: #dde7fb;
+    padding-left: 10px;
+    padding-right: 10px;
+    margin-right: 4px;
+}
+
+.unitgit-tab:hover {
+    background-color: #383838;
+}
+
+.unitgit-tab:active {
+    background-color: #314765;
+}
+
+.unitgit-tab--active {
+    background-color: #25487d;
+    border-width: 1px;
+    border-color: #3d65a4;
+}
+
+.unitgit-tab-label {
+    color: #dde7fb;
+}
+
+.unitgit-tab-icon {
+    width: 12px;
+    height: 12px;
+    margin-left: 8px;
+}
+
+.unitgit-spacer {
+    flex-grow: 1;
+}
+
+.unitgit-top-status {
+    color: #8d95a3;
+    font-size: 12px;
+}
+
+.unitgit-content {
+    flex-grow: 1;
+    min-height: 0;
+}
+
+.unitgit-workspace {
+    flex-grow: 1;
+    min-height: 0;
+    flex-direction: row;
+    background-color: #303030;
+}
+
+.unitgit-split-view {
+    flex-grow: 1;
+    min-width: 0;
+    min-height: 0;
+    background-color: #303030;
+}
+
+.unitgit-toolrail {
+    width: 42px;
+    min-width: 42px;
+    background-color: #303030;
+    border-right-width: 1px;
+    border-right-color: #25292f;
+    align-items: center;
+    padding-top: 8px;
+}
+
+.unitgit-rail-button {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    min-height: 28px;
+    margin-bottom: 7px;
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    border-radius: 4px;
+    color: #9aa4b3;
+    padding-left: 0;
+    padding-right: 0;
+    justify-content: center;
+    align-items: center;
+}
+
+.unitgit-rail-button:hover {
+    background-color: #383838;
+    color: #ffffff;
+}
+
+.unitgit-rail-button:active {
+    background-color: #31548f;
+}
+
+.unitgit-rail-icon {
+    width: 16px;
+    height: 16px;
+}
+
+.unitgit-branches-pane {
+    min-width: 260px;
+    flex-shrink: 0;
+    border-right-width: 1px;
+    border-right-color: #2a2e35;
+    background-color: #383838;
+}
+
+.unitgit-search {
+    height: 36px;
+    min-height: 36px;
+    margin-left: 8px;
+    margin-right: 8px;
+    margin-top: 6px;
+    margin-bottom: 5px;
+}
+
+.unitgit-search .unity-base-field__input,
+.unitgit-search .unity-base-text-field__input,
+.unitgit-search .unity-text-field__input,
+.unitgit-search .unity-text-input {
+    background-color: #303030;
+    border-width: 1px;
+    border-color: #3a3f47;
+    border-radius: 5px;
+    color: #cfd8e8;
+    padding-left: 12px;
+}
+
+.unitgit-branch-scroll {
+    flex-grow: 1;
+    min-height: 0;
+}
+
+.unitgit-tree-head {
+    height: 26px;
+    color: #ffffff;
+    -unity-font-style: bold;
+    padding-left: 12px;
+    -unity-text-align: middle-left;
+}
+
+.unitgit-tree-section {
+    margin-top: 2px;
+}
+
+.unitgit-foldout-button {
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    border-radius: 4px;
+    padding-left: 0;
+    padding-right: 0;
+    color: #dfe7f5;
+    -unity-text-align: middle-left;
+}
+
+.unitgit-foldout-button:hover {
+    background-color: #303030;
+}
+
+.unitgit-foldout-button:active {
+    background-color: #2a4168;
+}
+
+.unitgit-foldout-arrow {
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    margin-left: 2px;
+    margin-right: 4px;
+}
+
+.unitgit-foldout-title {
+    color: #dfe7f5;
+    flex-grow: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.unitgit-foldout-detail {
+    color: #9aa4b3;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.unitgit-tree-section-title {
+    height: 24px;
+    min-height: 24px;
+    margin-left: 8px;
+    margin-right: 10px;
+}
+
+.unitgit-tree-folder {
+    height: 24px;
+    min-height: 24px;
+    margin-left: 26px;
+    margin-right: 10px;
+}
+
+.unitgit-branch-row {
+    height: 26px;
+    min-height: 26px;
+    margin-left: 8px;
+    margin-right: 10px;
+    padding-left: 8px;
+    padding-right: 8px;
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    border-radius: 4px;
+    color: #dfe7f5;
+    -unity-text-align: middle-left;
+    justify-content: flex-start;
+    flex-direction: row;
+    align-items: center;
+}
+
+.unitgit-branch-row--indented {
+    margin-left: 30px;
+}
+
+.unitgit-branch-row:hover {
+    background-color: #303030;
+}
+
+.unitgit-branch-row:active {
+    background-color: #2a4168;
+}
+
+.unitgit-branch-row--selected,
+.unitgit-branch-row--current {
+    background-color: #31548f;
+}
+
+.unitgit-branch-row Label {
+    color: #dfe7f5;
+    -unity-text-align: middle-left;
+}
+
+.unitgit-branch-dot {
+    width: 9px;
+    height: 9px;
+    min-width: 9px;
+    min-height: 9px;
+    border-radius: 5px;
+    margin-right: 8px;
+}
+
+.unitgit-branch-name {
+    color: #eef4ff;
+    flex-grow: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.unitgit-branch-upstream {
+    color: #9aa4b3;
+    font-size: 10px;
+    margin-left: 8px;
+    max-width: 120px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.unitgit-branch-hash {
+    width: 52px;
+    color: #bdd6ff;
+    font-size: 10px;
+    margin-left: 8px;
+    -unity-text-align: middle-right;
+}
+
+.unitgit-branch-empty {
+    height: 24px;
+    color: #8992a2;
+    padding-left: 30px;
+    -unity-text-align: middle-left;
+}
+
+.unitgit-branch-footer {
+    height: 42px;
+    min-height: 42px;
+    border-top-width: 1px;
+    border-top-color: #25292f;
+    padding: 7px 8px 7px 8px;
+}
+
+.unitgit-log-pane {
+    flex-grow: 1;
+    min-width: 360px;
+    border-right-width: 1px;
+    border-right-color: #2a2e35;
+    background-color: #383838;
+}
+
+.unitgit-log-toolbar {
+    min-height: 40px;
+    height: 40px;
+    flex-direction: row;
+    align-items: center;
+    border-bottom-width: 1px;
+    border-bottom-color: #2a2e35;
+    padding-left: 8px;
+    padding-right: 8px;
+}
+
+.unitgit-log-search {
+    width: 310px;
+    min-width: 170px;
+    height: 30px;
+    margin-right: 8px;
+}
+
+.unitgit-log-search .unity-base-field__input,
+.unitgit-log-search .unity-base-text-field__input,
+.unitgit-log-search .unity-text-field__input,
+.unitgit-log-search .unity-text-input {
+    background-color: #303030;
+    border-width: 1px;
+    border-color: #3a3f47;
+    border-radius: 5px;
+    color: #cfd8e8;
+    padding-left: 12px;
+}
+
+.unitgit-toolbar-chip {
+    height: 26px;
+    padding-left: 8px;
+    padding-right: 8px;
+    margin-right: 5px;
+    color: #9aa4b3;
+    -unity-text-align: middle-center;
+}
+
+.unitgit-log-header {
+    height: 24px;
+    min-height: 24px;
+    flex-direction: row;
+    align-items: center;
+    border-bottom-width: 1px;
+    border-bottom-color: #24272c;
+    padding-left: 42px;
+}
+
+.unitgit-log-header-label {
+    color: #8992a2;
+    font-size: 11px;
+}
+
+.unitgit-log-header__commit {
+    flex-grow: 1;
+    min-width: 160px;
+}
+
+.unitgit-log-header__author {
+    width: 120px;
+}
+
+.unitgit-log-header__date {
+    width: 112px;
+}
+
+.unitgit-log-header__hash {
+    width: 70px;
+}
+
+.unitgit-log-scroll {
+    flex-grow: 1;
+    min-height: 0;
+}
+
+.unitgit-log-row {
+    height: 28px;
+    min-height: 28px;
+    margin-top: 0;
+    margin-bottom: 0;
+    flex-direction: row;
+    align-items: center;
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    border-radius: 0;
+    padding-left: 0;
+    padding-right: 0;
+}
+
+.unitgit-log-row:hover {
+    background-color: #303030;
+}
+
+.unitgit-log-row:active {
+    background-color: #283f64;
+}
+
+.unitgit-log-row--selected {
+    background-color: #253a5f;
+}
+
+.unitgit-graph-cell {
+    width: 42px;
+    min-width: 42px;
+    height: 28px;
+    min-height: 28px;
+    position: relative;
+}
+
+.unitgit-graph-line {
+    position: absolute;
+    left: 20px;
+    width: 2px;
+}
+
+.unitgit-graph-line--top {
+    top: -2px;
+    height: 17px;
+}
+
+.unitgit-graph-line--bottom {
+    top: 14px;
+    bottom: -2px;
+}
+
+.unitgit-graph-dot {
+    position: absolute;
+    left: 15px;
+    top: 9px;
+    width: 12px;
+    height: 12px;
+    min-width: 12px;
+    min-height: 12px;
+    border-radius: 6px;
+    border-width: 2px;
+    border-color: #303030;
+}
+
+.unitgit-log-subject-wrap {
+    flex-grow: 1;
+    min-width: 130px;
+    flex-direction: row;
+    align-items: center;
+}
+
+.unitgit-log-subject {
+    color: #eef4ff;
+    white-space: nowrap;
+    overflow: hidden;
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.unitgit-log-decoration {
+    margin-left: 8px;
+    color: #9ab5e7;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.unitgit-log-author {
+    width: 120px;
+    color: #eef4ff;
+    -unity-font-style: bold;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.unitgit-log-date {
+    width: 112px;
+    color: #cfd8e8;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.unitgit-log-hash {
+    width: 70px;
+    color: #bdd6ff;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.unitgit-details-pane {
+    min-width: 300px;
+    flex-shrink: 0;
+    background-color: #383838;
+}
+
+.unitgit-files-panel {
+    height: 238px;
+    min-height: 150px;
+    border-bottom-width: 1px;
+    border-bottom-color: #2a2e35;
+}
+
+.unitgit-section-header {
+    height: 32px;
+    min-height: 32px;
+    flex-direction: row;
+    align-items: center;
+    padding-left: 14px;
+    padding-right: 12px;
+}
+
+.unitgit-section-title {
+    color: #eef4ff;
+    -unity-font-style: bold;
+    flex-grow: 1;
+}
+
+.unitgit-section-detail {
+    color: #8992a2;
+    font-size: 11px;
+}
+
+.unitgit-files-scroll {
+    flex-grow: 1;
+    min-height: 0;
+}
+
+.unitgit-file-folder {
+    height: 23px;
+    min-height: 23px;
+    margin-left: 8px;
+    margin-right: 10px;
+    padding-left: 6px;
+    padding-right: 8px;
+}
+
+.unitgit-file-folder .unitgit-foldout-title {
+    color: #dfe7f5;
+}
+
+.unitgit-file-folder .unitgit-foldout-detail {
+    color: #8992a2;
+    font-size: 11px;
+}
+
+.unitgit-file-row {
+    height: 22px;
+    min-height: 22px;
+    color: #42c879;
+    margin-left: 24px;
+    margin-right: 10px;
+    padding-left: 8px;
+    padding-right: 8px;
+    border-width: 0;
+    border-radius: 4px;
+    background-color: rgba(0, 0, 0, 0);
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+}
+
+.unitgit-file-row:hover {
+    background-color: #303030;
+}
+
+.unitgit-file-row:active {
+    background-color: #31548f;
+}
+
+.unitgit-file-row-icon {
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    min-height: 16px;
+    margin-right: 8px;
+    -unity-background-image-tint-color: #dfe7f5;
+}
+
+.unitgit-file-row-name {
+    color: #42c879;
+    flex-grow: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.unitgit-details-card {
+    flex-grow: 1;
+    min-height: 0;
+    padding: 14px;
+}
+
+.unitgit-details-title {
+    color: #eef4ff;
+    -unity-font-style: bold;
+    font-size: 13px;
+    white-space: normal;
+    margin-bottom: 12px;
+}
+
+.unitgit-details-hash {
+    color: #85b6ff;
+    margin-bottom: 4px;
+}
+
+.unitgit-details-text {
+    color: #d9e7ff;
+    white-space: normal;
+    margin-bottom: 4px;
+}
+
+.unitgit-details-muted {
+    color: #8992a2;
+    white-space: normal;
+    margin-bottom: 12px;
+}
+
+.unitgit-decoration-line {
+    color: #d7ca58;
+    white-space: normal;
+}
+
+.unitgit-local-pane {
+    flex-grow: 1;
+    min-width: 350px;
+    border-right-width: 1px;
+    border-right-color: #2a2e35;
+}
+
+.unitgit-changes-pane {
+    flex-grow: 1;
+    min-width: 280px;
+    min-height: 0;
+    background-color: #383838;
+    border-right-width: 1px;
+    border-right-color: #303030;
+}
+
+.unitgit-changes-header {
+    height: 42px;
+    min-height: 42px;
+    padding-left: 18px;
+    padding-right: 14px;
+    border-bottom-width: 1px;
+    border-bottom-color: #303030;
+    border-radius: 0;
+}
+
+.unitgit-changes-header .unitgit-foldout-title {
+    color: #ffffff;
+    -unity-font-style: bold;
+    font-size: 13px;
+}
+
+.unitgit-changes-header .unitgit-foldout-detail {
+    color: #9aa4b3;
+    font-size: 12px;
+}
+
+.unitgit-changes-actions {
+    height: 38px;
+    min-height: 38px;
+    flex-direction: row;
+    align-items: center;
+    padding-left: 10px;
+    padding-right: 8px;
+    border-bottom-width: 1px;
+    border-bottom-color: #303030;
+}
+
+.unitgit-changes-list {
+    flex-grow: 1;
+    min-height: 0;
+    background-color: #383838;
+}
+
+.unitgit-change-file-row {
+    height: 28px;
+    min-height: 28px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    border-width: 0;
+    border-radius: 4px;
+    margin-left: 50px;
+    margin-right: 10px;
+    margin-bottom: 1px;
+    padding-left: 8px;
+    padding-right: 8px;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+.unitgit-change-file-row--indented {
+    margin-left: 72px;
+}
+
+.unitgit-change-file-row:hover {
+    background-color: #303030;
+}
+
+.unitgit-change-file-row--selected {
+    background-color: #31548f;
+}
+
+.unitgit-change-file-icon {
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    min-height: 16px;
+    margin-right: 8px;
+    -unity-background-image-tint-color: #dfe7f5;
+}
+
+.unitgit-change-file-name {
+    color: #70b7ff;
+    flex-shrink: 0;
+    max-width: 230px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.unitgit-change-file-directory {
+    margin-left: 7px;
+    color: #8d95a3;
+    white-space: nowrap;
+    overflow: hidden;
+    flex-grow: 1;
+}
+
+.unitgit-change-file-status {
+    width: 70px;
+    color: #d7ca58;
+    font-size: 10px;
+    -unity-text-align: middle-right;
+}
+
+.unitgit-change-folder {
+    height: 26px;
+    min-height: 26px;
+    margin-left: 50px;
+    margin-right: 10px;
+    padding-left: 8px;
+    padding-right: 8px;
+}
+
+.unitgit-change-folder .unitgit-foldout-title {
+    color: #dfe7f5;
+}
+
+.unitgit-change-folder .unitgit-foldout-detail {
+    color: #8992a2;
+    font-size: 11px;
+}
+
+.unitgit-local-commit-panel {
+    min-height: 54px;
+    flex-direction: row;
+    align-items: center;
+    padding-left: 10px;
+    padding-right: 8px;
+    border-top-width: 1px;
+    border-top-color: #303030;
+}
+
+.unitgit-local-commit-message {
+    flex-grow: 1;
+    height: 30px;
+    margin-right: 8px;
+}
+
+.unitgit-local-commit-message .unity-base-field__input,
+.unitgit-local-commit-message .unity-base-text-field__input,
+.unitgit-local-commit-message .unity-text-field__input,
+.unitgit-local-commit-message .unity-text-input {
+    background-color: #303030;
+    color: #eef4ff;
+    border-width: 1px;
+    border-color: #4b4b4b;
+    border-radius: 5px;
+    padding-left: 8px;
+}
+
+.unitgit-diff-pane {
+    flex-grow: 1;
+    min-width: 420px;
+    min-height: 0;
+    background-color: #303030;
+}
+
+.unitgit-diff-toolbar {
+    height: 38px;
+    min-height: 38px;
+    flex-direction: row;
+    align-items: center;
+    padding-left: 10px;
+    padding-right: 8px;
+    border-bottom-width: 1px;
+    border-bottom-color: #383838;
+}
+
+.unitgit-diff-tool-button {
+    width: 28px;
+    height: 24px;
+    min-width: 28px;
+    min-height: 24px;
+    margin-right: 4px;
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    color: #cfd8e8;
+}
+
+.unitgit-diff-tool-icon {
+    width: 14px;
+    height: 14px;
+}
+
+.unitgit-diff-tool-button:hover {
+    background-color: #383838;
+}
+
+.unitgit-diff-path-row {
+    height: 30px;
+    min-height: 30px;
+    flex-direction: row;
+    align-items: center;
+    padding-left: 12px;
+    color: #cfd8e8;
+    border-bottom-width: 1px;
+    border-bottom-color: #383838;
+}
+
+.unitgit-diff-header {
+    height: 28px;
+    min-height: 28px;
+    flex-direction: row;
+    border-bottom-width: 1px;
+    border-bottom-color: #383838;
+}
+
+.unitgit-diff-header-cell {
+    flex-grow: 1;
+    width: 50%;
+    color: #ffffff;
+    padding-left: 12px;
+    -unity-text-align: middle-left;
+}
+
+.unitgit-diff-scroll {
+    flex-grow: 1;
+    min-height: 0;
+}
+
+.unitgit-diff-line {
+    min-height: 20px;
+    flex-direction: row;
+}
+
+.unitgit-diff-cell {
+    width: 50%;
+    flex-grow: 1;
+    min-width: 420px;
+    color: #dce5f4;
+    padding-left: 12px;
+    padding-right: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.unitgit-diff-line--hunk .unitgit-diff-cell {
+    background-color: #383838;
+    color: #8d95a3;
+}
+
+.unitgit-diff-line--added .unitgit-diff-cell,
+.unitgit-diff-line--changed .unitgit-diff-cell {
+    background-color: rgba(49, 89, 64, 0.82);
+}
+
+.unitgit-diff-line--removed .unitgit-diff-cell {
+    background-color: rgba(95, 57, 57, 0.78);
+}
+
+.unitgit-commit-pane {
+    min-width: 300px;
+    flex-shrink: 0;
+    background-color: #383838;
+}
+
+.unitgit-scroll {
+    flex-grow: 1;
+    min-height: 0;
+}
+
+.unitgit-row-actions {
+    min-height: 42px;
+    flex-direction: row;
+    align-items: center;
+    padding-left: 12px;
+    padding-right: 12px;
+}
+
+.unitgit-button {
+    height: 28px;
+    min-height: 28px;
+    background-color: #595959;
+    color: #ffffff;
+    border-width: 0;
+    border-radius: 8px;
+    padding-left: 10px;
+    padding-right: 10px;
+    margin-right: 8px;
+}
+
+.unitgit-button:hover {
+    background-color: #6a6a6a;
+}
+
+.unitgit-button:active {
+    background-color: #31548f;
+}
+
+.unitgit-button--primary {
+    background-color: #00da6d;
+    color: #ffffff;
+    -unity-font-style: bold;
+}
+
+.unitgit-button--primary:hover {
+    background-color: #13e47c;
+}
+
+.unitgit-button Label {
+    color: #ffffff;
+}
+
+.unitgit-github-setup {
+    flex-grow: 1;
+    background-color: #303030;
+    padding: 14px;
+}
+
+.unitgit-github-setup-title {
+    color: #ffffff;
+    -unity-font-style: bold;
+    font-size: 14px;
+    margin-bottom: 8px;
+}
+
+.unitgit-github-setup-body {
+    color: #cfd8e8;
+    white-space: normal;
+    margin-bottom: 12px;
+}
+
+.unitgit-github-setup-field {
+    margin-bottom: 8px;
+}
+
+.unitgit-github-setup-field .unity-label {
+    color: #dfe7f5;
+    min-width: 82px;
+}
+
+.unitgit-github-setup-field .unity-base-field__input,
+.unitgit-github-setup-field .unity-base-text-field__input,
+.unitgit-github-setup-field .unity-text-field__input,
+.unitgit-github-setup-field .unity-text-input {
+    background-color: #303030;
+    color: #eef4ff;
+    border-width: 1px;
+    border-color: #4b4b4b;
+    border-radius: 5px;
+    padding-left: 8px;
+}
+
+.unitgit-github-setup-toggle {
+    color: #dfe7f5;
+    margin-bottom: 8px;
+}
+
+.unitgit-console-tail {
+    margin: 12px;
+    flex-grow: 1;
+    min-height: 100px;
+    background-color: #303030;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #282d35;
+    padding: 8px;
+}
+
+.unitgit-console-full {
+    flex-grow: 1;
+    min-height: 0;
+    padding: 14px;
+    background-color: #303030;
+}
+
+.unitgit-console-scroll {
+    flex-grow: 1;
+    min-height: 0;
+    background-color: #383838;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #282d35;
+    padding: 10px;
+}
+
+.unitgit-console-line {
+    color: #cbd4e3;
+    font-size: 11px;
+    white-space: normal;
+    margin-bottom: 4px;
+}
+
+.unitgit-shelf-row {
+    min-height: 30px;
+    margin-left: 12px;
+    margin-right: 12px;
+    margin-bottom: 4px;
+    background-color: #303030;
+    border-width: 0;
+    border-radius: 6px;
+    color: #eef4ff;
+    -unity-text-align: middle-left;
+    justify-content: flex-start;
+}
+
+.unitgit-shelf-row:hover {
+    background-color: #383838;
+}
+
+.unitgit-shelf-row--selected {
+    background-color: #31548f;
+}
+
+.unitgit-shelf-row Label {
+    color: #eef4ff;
+    -unity-text-align: middle-left;
+}
+
+.unitgit-message-panel {
+    width: 620px;
+    max-width: 620px;
+    align-self: center;
+    margin-top: 72px;
+    background-color: #383838;
+    border-radius: 8px;
+    border-left-width: 4px;
+    border-left-color: #00da6d;
+    padding: 22px;
+}
+
+.unitgit-message-title {
+    color: #ffffff;
+    font-size: 18px;
+    -unity-font-style: bold;
+    margin-bottom: 8px;
+}
+
+.unitgit-message-body {
+    color: #d1d1d1;
+    white-space: normal;
+    margin-bottom: 12px;
+}
+
+.unitgit-path-label {
+    color: #85b6ff;
+    background-color: #303030;
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 12px;
+    white-space: normal;
+}
+
+.unitgit-init-toggle {
+    margin-top: 2px;
+    margin-bottom: 4px;
+}
+
+.unitgit-init-toggle Label {
+    color: #ffffff;
+}
+
+.unitgit-init-toggle-detail {
+    color: #d1d1d1;
+    font-size: 11px;
+    white-space: normal;
+    margin-bottom: 14px;
+}
+
+.unitgit-message-actions {
+    flex-direction: row;
+    align-items: center;
+}
+
+.unitgit-empty {
+    color: #8992a2;
+    padding: 14px;
+    white-space: normal;
+}
+
+.unitgit-branch-prompt {
+    background-color: #303030;
+    padding: 14px;
+}
+
+.unitgit-branch-prompt-title {
+    color: #ffffff;
+    -unity-font-style: bold;
+    margin-bottom: 8px;
+}
+
+.unitgit-branch-prompt-field {
+    height: 30px;
+}
+
+.unitgit-branch-prompt-field .unity-base-field__input,
+.unitgit-branch-prompt-field .unity-base-text-field__input,
+.unitgit-branch-prompt-field .unity-text-field__input,
+.unitgit-branch-prompt-field .unity-text-input {
+    background-color: #383838;
+    color: #eef4ff;
+    border-width: 1px;
+    border-color: #4b4b4b;
+    border-radius: 5px;
+    padding-left: 8px;
+}
