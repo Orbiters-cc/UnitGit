@@ -2,6 +2,8 @@ using System.Collections.Generic;
 
 namespace Orbiters.UnitGit.Editor
 {
+    internal delegate void UnitGitProcessLogHandler(string line);
+
     internal sealed class GitCommandResult
     {
         public int ExitCode;
@@ -139,7 +141,6 @@ namespace Orbiters.UnitGit.Editor
         public string CommitterName = string.Empty;
         public string CommitterEmail = string.Empty;
         public string CommitterDate = string.Empty;
-        public string Body = string.Empty;
         public List<string> ChangedFiles = new List<string>();
     }
 
@@ -166,5 +167,11 @@ namespace Orbiters.UnitGit.Editor
         Removed,
         Changed,
         Hunk
+    }
+
+    internal enum UnitGitRemoteProvider
+    {
+        GitHub,
+        GitLab
     }
 }

@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Orbiters.UnitGit;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -23,6 +25,10 @@ namespace Orbiters.UnitGit.Editor
         private const string BranchLocalFoldPref = FoldPrefPrefix + "Branch.Local";
         private const string BranchRemoteFoldPref = FoldPrefPrefix + "Branch.Remote";
         private const string ChangesFoldPref = FoldPrefPrefix + "Changes";
+        private const double EditorEventRefreshDelaySeconds = 0.35d;
+        private const double EditorEventRefreshCooldownSeconds = 1.25d;
+        private const double LogSearchRefreshDelaySeconds = 0.25d;
+        private const int CommitPageSize = 100;
 
         private static readonly Color[] BranchGraphPalette =
         {
@@ -35,6 +41,8 @@ namespace Orbiters.UnitGit.Editor
         };
 
         private readonly List<string> consoleLines = new List<string>();
+        private readonly ConcurrentQueue<string> pendingConsoleLines = new ConcurrentQueue<string>();
+        private readonly ConcurrentQueue<Action> pendingMainThreadActions = new ConcurrentQueue<Action>();
         private readonly Dictionary<string, Vector2> scrollOffsets = new Dictionary<string, Vector2>(StringComparer.Ordinal);
         private readonly Dictionary<string, float> splitSizes = new Dictionary<string, float>(StringComparer.Ordinal);
         private readonly Dictionary<string, Color> branchGraphColors = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
@@ -47,13 +55,28 @@ namespace Orbiters.UnitGit.Editor
         private string selectedChangePath = string.Empty;
         private string selectedShelf = string.Empty;
         private VisualElement contentRoot;
+        private VisualElement localChangesListRoot;
+        private VisualElement localDiffPaneRoot;
         private UnitGitTab activeTab = UnitGitTab.Log;
         private string branchSearch = string.Empty;
         private string logSearch = string.Empty;
+        private string logSearchDraft = string.Empty;
+        private int logPage;
+        private string diffSearch = string.Empty;
+        private int diffSearchMatchIndex;
+        private TextField diffSearchField;
         private string commitMessage = string.Empty;
         private bool excludePackageFolderFromInitialCommit = true;
         private bool busy;
         private bool refreshQueued;
+        private bool refreshingSnapshot;
+        private bool refreshAgainRequested;
+        private bool editorUpdatePumpActive;
+        private bool logSearchRefreshQueued;
+        private double queuedRefreshTime;
+        private double queuedLogSearchRefreshTime;
+        private double lastEditorEventRefreshTime = -1000d;
+        private int refreshRequestId;
 
         [MenuItem("Tools/Orbiters/Unit Git")]
         private static void OpenWindow()
@@ -66,6 +89,7 @@ namespace Orbiters.UnitGit.Editor
 
         private void OnEnable()
         {
+            ResetTransientAsyncState();
             gitService = new UnitGitService();
             initializer = new UnitGitProjectInitializer();
             EditorApplication.projectChanged += QueueRefreshFromEditorEvent;
@@ -79,11 +103,36 @@ namespace Orbiters.UnitGit.Editor
             EditorApplication.focusChanged -= OnEditorFocusChanged;
             EditorSceneManager.sceneSaved -= OnSceneSaved;
             EditorApplication.delayCall -= RunQueuedRefresh;
+            EditorApplication.update -= RunQueuedRefresh;
+            EditorApplication.update -= RunQueuedLogSearchRefresh;
+            EditorApplication.update -= DrainEditorQueues;
+        }
+
+        private void ResetTransientAsyncState()
+        {
+            busy = false;
+            refreshQueued = false;
+            refreshingSnapshot = false;
+            refreshAgainRequested = false;
+            editorUpdatePumpActive = false;
+            logSearchRefreshQueued = false;
+            while (pendingConsoleLines.TryDequeue(out _))
+            {
+            }
+
+            while (pendingMainThreadActions.TryDequeue(out _))
+            {
+            }
+
+            EditorApplication.update -= RunQueuedRefresh;
+            EditorApplication.update -= RunQueuedLogSearchRefresh;
+            EditorApplication.update -= DrainEditorQueues;
         }
 
         public void CreateGUI()
         {
             BuildShell();
+            refreshAgainRequested = false;
             RefreshSnapshot();
         }
 
@@ -102,23 +151,77 @@ namespace Orbiters.UnitGit.Editor
 
         private void QueueRefreshFromEditorEvent()
         {
+            double now = EditorApplication.timeSinceStartup;
+            double nextAllowedRefresh = lastEditorEventRefreshTime + EditorEventRefreshCooldownSeconds;
+            queuedRefreshTime = Math.Max(now + EditorEventRefreshDelaySeconds, nextAllowedRefresh);
             if (refreshQueued)
             {
                 return;
             }
 
             refreshQueued = true;
-            EditorApplication.delayCall += RunQueuedRefresh;
+            EditorApplication.update += RunQueuedRefresh;
         }
 
         private void RunQueuedRefresh()
         {
-            refreshQueued = false;
-            if (this == null || busy)
+            if (this == null)
+            {
+                EditorApplication.update -= RunQueuedRefresh;
+                return;
+            }
+
+            if (EditorApplication.timeSinceStartup < queuedRefreshTime)
             {
                 return;
             }
 
+            EditorApplication.update -= RunQueuedRefresh;
+            refreshQueued = false;
+            if (busy)
+            {
+                refreshAgainRequested = true;
+                return;
+            }
+
+            lastEditorEventRefreshTime = EditorApplication.timeSinceStartup;
+            RefreshSnapshot();
+        }
+
+        private void QueueLogSearchRefresh()
+        {
+            logPage = 0;
+            queuedLogSearchRefreshTime = EditorApplication.timeSinceStartup + LogSearchRefreshDelaySeconds;
+            if (logSearchRefreshQueued)
+            {
+                return;
+            }
+
+            logSearchRefreshQueued = true;
+            EditorApplication.update += RunQueuedLogSearchRefresh;
+        }
+
+        private void RunQueuedLogSearchRefresh()
+        {
+            if (this == null)
+            {
+                EditorApplication.update -= RunQueuedLogSearchRefresh;
+                return;
+            }
+
+            if (EditorApplication.timeSinceStartup < queuedLogSearchRefreshTime)
+            {
+                return;
+            }
+
+            EditorApplication.update -= RunQueuedLogSearchRefresh;
+            logSearchRefreshQueued = false;
+            if (string.Equals(logSearch, logSearchDraft, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            logSearch = logSearchDraft;
             RefreshSnapshot();
         }
 
@@ -187,7 +290,7 @@ namespace Orbiters.UnitGit.Editor
             topBar.Add(BuildTabButton(UnitGitTab.LocalChanges, "Local Changes"));
             topBar.Add(BuildTabButton(UnitGitTab.Shelf, "Shelf"));
             topBar.Add(BuildTabButton(UnitGitTab.Log, GetLogTabTitle()));
-            topBar.Add(BuildTabButton(UnitGitTab.Console, "Console", UnitGitIconKind.Close));
+            topBar.Add(BuildTabButton(UnitGitTab.Console, "Console"));
 
             var spacer = new VisualElement();
             spacer.AddToClassList("unitgit-spacer");
@@ -200,7 +303,7 @@ namespace Orbiters.UnitGit.Editor
             return topBar;
         }
 
-        private Button BuildTabButton(UnitGitTab tab, string text, UnitGitIconKind? iconKind = null)
+        private Button BuildTabButton(UnitGitTab tab, string text)
         {
             var button = new Button(() => SetActiveTab(tab));
             button.AddToClassList("unitgit-tab");
@@ -212,13 +315,6 @@ namespace Orbiters.UnitGit.Editor
             var label = new Label(text);
             label.AddToClassList("unitgit-tab-label");
             button.Add(label);
-
-            if (iconKind.HasValue)
-            {
-                var icon = new UnitGitIconElement(iconKind.Value);
-                icon.AddToClassList("unitgit-tab-icon");
-                button.Add(icon);
-            }
 
             return button;
         }
@@ -283,7 +379,116 @@ namespace Orbiters.UnitGit.Editor
             }
 
             RememberScrollOffsets();
-            snapshot = gitService.BuildSnapshot(logSearch);
+            if (refreshingSnapshot)
+            {
+                if (!editorUpdatePumpActive && pendingMainThreadActions.IsEmpty)
+                {
+                    refreshingSnapshot = false;
+                    AppendConsole("refresh", "recovered stale refresh state");
+                }
+                else
+                {
+                    refreshAgainRequested = true;
+                    return;
+                }
+            }
+
+            if (refreshingSnapshot)
+            {
+                refreshAgainRequested = true;
+                return;
+            }
+
+            refreshingSnapshot = true;
+            int requestId = ++refreshRequestId;
+            string projectRoot = gitService.ProjectRoot;
+            string search = logSearch;
+            string selectedCommitHash = selectedCommit != null ? selectedCommit.FullHash : string.Empty;
+            try
+            {
+                EnsureEditorUpdatePump();
+                Task.Run(() => BuildSnapshotRefreshResult(
+                        projectRoot,
+                        search,
+                        selectedCommitHash,
+                        line =>
+                        {
+                            if (ShouldLogRefreshProcessLine(line))
+                            {
+                                QueueConsoleLine("refresh", line);
+                            }
+                        }))
+                    .ContinueWith(task => QueueMainThreadAction(() => ApplySnapshotRefresh(requestId, task)));
+            }
+            catch (Exception ex)
+            {
+                refreshingSnapshot = false;
+                AppendConsole("refresh", "error: " + ex.Message);
+                RebuildContent();
+            }
+        }
+
+        private static SnapshotRefreshResult BuildSnapshotRefreshResult(
+            string projectRoot,
+            string search,
+            string selectedCommitHash,
+            UnitGitProcessLogHandler logHandler)
+        {
+            var service = new UnitGitService(projectRoot);
+            service.ProcessLogReceived = logHandler;
+            UnitGitSnapshot nextSnapshot = service.BuildSnapshot(search);
+            var result = new SnapshotRefreshResult
+            {
+                Snapshot = nextSnapshot
+            };
+
+            if (nextSnapshot.HasRepository && nextSnapshot.Commits.Count > 0)
+            {
+                UnitGitCommit commit = nextSnapshot.Commits.FirstOrDefault(item => item.FullHash == selectedCommitHash)
+                    ?? nextSnapshot.Commits[0];
+                result.SelectedDetails = service.GetCommitDetails(commit.FullHash);
+            }
+
+            return result;
+        }
+
+        private void ApplySnapshotRefresh(int requestId, Task<SnapshotRefreshResult> task)
+        {
+            if (this == null)
+            {
+                return;
+            }
+
+            if (requestId != refreshRequestId)
+            {
+                return;
+            }
+
+            refreshingSnapshot = false;
+            if (task.Status != TaskStatus.RanToCompletion)
+            {
+                Exception error = task.Exception != null ? task.Exception.GetBaseException() : null;
+                AppendConsole("refresh", "error: " + (error != null ? error.Message : "Failed to refresh Git state."));
+            }
+            else if (task.Result != null && task.Result.Snapshot != null)
+            {
+                snapshot = task.Result.Snapshot;
+                ReconcileSnapshotSelection(task.Result);
+            }
+
+            BuildShell();
+            RebuildContent();
+            RestoreScrollOffsets();
+
+            if (refreshAgainRequested)
+            {
+                refreshAgainRequested = false;
+                RefreshSnapshot();
+            }
+        }
+
+        private void ReconcileSnapshotSelection(SnapshotRefreshResult result)
+        {
             if (snapshot.Branches.Count > 0 &&
                 (selectedBranch == null || snapshot.Branches.All(branch => branch.FullRef != selectedBranch.FullRef)))
             {
@@ -306,7 +511,21 @@ namespace Orbiters.UnitGit.Editor
                 if (selectedCommit == null || snapshot.Commits.All(commit => commit.FullHash != selectedCommit.FullHash))
                 {
                     selectedCommit = snapshot.Commits[0];
-                    selectedDetails = gitService.GetCommitDetails(selectedCommit.FullHash);
+                }
+
+                if (result.SelectedDetails != null &&
+                    result.SelectedDetails.Commit != null &&
+                    selectedCommit != null &&
+                    result.SelectedDetails.Commit.FullHash == selectedCommit.FullHash)
+                {
+                    selectedDetails = result.SelectedDetails;
+                }
+                else if (selectedDetails == null ||
+                         selectedDetails.Commit == null ||
+                         selectedCommit == null ||
+                         selectedDetails.Commit.FullHash != selectedCommit.FullHash)
+                {
+                    selectedDetails = null;
                 }
             }
             else
@@ -314,10 +533,6 @@ namespace Orbiters.UnitGit.Editor
                 selectedCommit = null;
                 selectedDetails = null;
             }
-
-            BuildShell();
-            RebuildContent();
-            RestoreScrollOffsets();
         }
 
         private void RebuildContent()
@@ -327,6 +542,8 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
+            localChangesListRoot = null;
+            localDiffPaneRoot = null;
             contentRoot.Clear();
 
             if (snapshot == null)
@@ -429,7 +646,10 @@ namespace Orbiters.UnitGit.Editor
 
             var split = BuildTrackedSplit(LocalChangesDiffSplitPref, 0, 620f);
             split.Add(BuildLocalChangesListPane());
-            split.Add(BuildDiffViewerPane());
+            localDiffPaneRoot = new VisualElement();
+            localDiffPaneRoot.AddToClassList("unitgit-diff-pane-container");
+            localDiffPaneRoot.Add(BuildDiffViewerPane());
+            split.Add(localDiffPaneRoot);
             workspace.Add(split);
 
             return workspace;
@@ -460,6 +680,7 @@ namespace Orbiters.UnitGit.Editor
             var list = new ScrollView();
             list.name = "unitgit-local-changes-list";
             list.AddToClassList("unitgit-changes-list");
+            localChangesListRoot = list;
             if (snapshot.Changes.Count == 0)
             {
                 list.Add(BuildEmptyState("Working tree is clean."));
@@ -527,9 +748,9 @@ namespace Orbiters.UnitGit.Editor
         {
             var row = new Button(() =>
             {
-                selectedChangePath = change.Path;
-                RebuildContent();
+                SelectLocalChange(change);
             });
+            row.userData = change.Path;
             row.AddToClassList("unitgit-change-file-row");
             if (indented)
             {
@@ -558,6 +779,46 @@ namespace Orbiters.UnitGit.Editor
             return row;
         }
 
+        private void SelectLocalChange(UnitGitStatusEntry change)
+        {
+            if (change == null)
+            {
+                return;
+            }
+
+            selectedChangePath = change.Path;
+            UpdateLocalChangeSelectionState();
+            RebuildLocalDiffPane();
+        }
+
+        private void UpdateLocalChangeSelectionState()
+        {
+            if (localChangesListRoot == null)
+            {
+                return;
+            }
+
+            localChangesListRoot.Query<Button>(className: "unitgit-change-file-row").ForEach(row =>
+            {
+                string rowPath = row.userData as string;
+                row.EnableInClassList(
+                    "unitgit-change-file-row--selected",
+                    string.Equals(rowPath, selectedChangePath, StringComparison.OrdinalIgnoreCase));
+            });
+        }
+
+        private void RebuildLocalDiffPane()
+        {
+            if (localDiffPaneRoot == null)
+            {
+                RebuildContent();
+                return;
+            }
+
+            localDiffPaneRoot.Clear();
+            localDiffPaneRoot.Add(BuildDiffViewerPane());
+        }
+
         private VisualElement BuildDiffViewerPane()
         {
             var pane = new VisualElement();
@@ -568,12 +829,20 @@ namespace Orbiters.UnitGit.Editor
 
             var toolbar = new VisualElement();
             toolbar.AddToClassList("unitgit-diff-toolbar");
-            toolbar.Add(BuildDiffToolButton(UnitGitIconKind.PreviousDifference, "Previous difference"));
-            toolbar.Add(BuildDiffToolButton(UnitGitIconKind.NextDifference, "Next difference"));
-            toolbar.Add(BuildDiffToolButton(UnitGitIconKind.Search, "Search in diff"));
-            toolbar.Add(BuildToolbarChip("Side-by-side viewer"));
-            toolbar.Add(BuildToolbarChip("Ignore whitespaces and empty lines"));
-            toolbar.Add(BuildToolbarChip("Highlight words"));
+            toolbar.Add(BuildDiffToolButton(UnitGitIconKind.PreviousDifference, "Previous search match", PreviousDiffSearchMatch));
+            toolbar.Add(BuildDiffToolButton(UnitGitIconKind.NextDifference, "Next search match", NextDiffSearchMatch));
+            toolbar.Add(BuildDiffToolButton(UnitGitIconKind.Search, "Focus diff search", FocusDiffSearch));
+            diffSearchField = new TextField();
+            diffSearchField.value = diffSearch;
+            diffSearchField.tooltip = "Search in diff";
+            diffSearchField.AddToClassList("unitgit-diff-search");
+            diffSearchField.RegisterValueChangedCallback(evt =>
+            {
+                diffSearch = evt.newValue;
+                diffSearchMatchIndex = 0;
+                RebuildLocalDiffPane();
+            });
+            toolbar.Add(diffSearchField);
             var spacer = new VisualElement();
             spacer.AddToClassList("unitgit-spacer");
             toolbar.Add(spacer);
@@ -598,18 +867,41 @@ namespace Orbiters.UnitGit.Editor
             var scroll = new ScrollView(ScrollViewMode.VerticalAndHorizontal);
             scroll.name = "unitgit-diff-scroll";
             scroll.AddToClassList("unitgit-diff-scroll");
+            int matchCount = diff.Lines.Count(MatchesDiffSearch);
+            if (matchCount == 0)
+            {
+                diffSearchMatchIndex = 0;
+            }
+            else if (diffSearchMatchIndex >= matchCount)
+            {
+                diffSearchMatchIndex = matchCount - 1;
+            }
+
+            int matchIndex = 0;
             foreach (UnitGitDiffLine line in diff.Lines)
             {
-                scroll.Add(BuildDiffLine(line));
+                bool isMatch = MatchesDiffSearch(line);
+                bool isCurrentMatch = isMatch && matchIndex == diffSearchMatchIndex;
+                VisualElement row = BuildDiffLine(line, isMatch, isCurrentMatch);
+                scroll.Add(row);
+                if (isCurrentMatch)
+                {
+                    scroll.schedule.Execute(() => scroll.ScrollTo(row));
+                }
+
+                if (isMatch)
+                {
+                    matchIndex++;
+                }
             }
 
             pane.Add(scroll);
             return pane;
         }
 
-        private Button BuildDiffToolButton(UnitGitIconKind iconKind, string tooltip)
+        private Button BuildDiffToolButton(UnitGitIconKind iconKind, string tooltip, Action action)
         {
-            var button = new Button();
+            var button = new Button(() => action?.Invoke());
             button.tooltip = tooltip;
             button.AddToClassList("unitgit-diff-tool-button");
             var icon = new UnitGitIconElement(iconKind);
@@ -618,11 +910,20 @@ namespace Orbiters.UnitGit.Editor
             return button;
         }
 
-        private VisualElement BuildDiffLine(UnitGitDiffLine line)
+        private VisualElement BuildDiffLine(UnitGitDiffLine line, bool isSearchMatch, bool isCurrentSearchMatch)
         {
             var row = new VisualElement();
             row.AddToClassList("unitgit-diff-line");
             row.AddToClassList("unitgit-diff-line--" + line.Kind.ToString().ToLowerInvariant());
+            if (isSearchMatch)
+            {
+                row.AddToClassList("unitgit-diff-line--search-match");
+            }
+
+            if (isCurrentSearchMatch)
+            {
+                row.AddToClassList("unitgit-diff-line--search-current");
+            }
 
             var left = new Label(line.Left);
             left.AddToClassList("unitgit-diff-cell");
@@ -633,6 +934,60 @@ namespace Orbiters.UnitGit.Editor
             row.Add(right);
 
             return row;
+        }
+
+        private void PreviousDiffSearchMatch()
+        {
+            int matchCount = GetCurrentDiffSearchMatchCount();
+            if (matchCount == 0)
+            {
+                FocusDiffSearch();
+                return;
+            }
+
+            diffSearchMatchIndex = (diffSearchMatchIndex + matchCount - 1) % matchCount;
+            RebuildLocalDiffPane();
+        }
+
+        private void NextDiffSearchMatch()
+        {
+            int matchCount = GetCurrentDiffSearchMatchCount();
+            if (matchCount == 0)
+            {
+                FocusDiffSearch();
+                return;
+            }
+
+            diffSearchMatchIndex = (diffSearchMatchIndex + 1) % matchCount;
+            RebuildLocalDiffPane();
+        }
+
+        private void FocusDiffSearch()
+        {
+            diffSearchField?.Focus();
+            if (!string.IsNullOrWhiteSpace(diffSearch))
+            {
+                diffSearchMatchIndex = 0;
+                RebuildLocalDiffPane();
+            }
+        }
+
+        private int GetCurrentDiffSearchMatchCount()
+        {
+            UnitGitStatusEntry selectedChange = GetSelectedChange();
+            UnitGitDiff diff = gitService.GetFileDiff(selectedChange);
+            return diff.Lines.Count(MatchesDiffSearch);
+        }
+
+        private bool MatchesDiffSearch(UnitGitDiffLine line)
+        {
+            if (line == null || string.IsNullOrWhiteSpace(diffSearch))
+            {
+                return false;
+            }
+
+            return (line.Left != null && line.Left.IndexOf(diffSearch, StringComparison.OrdinalIgnoreCase) >= 0) ||
+                   (line.Right != null && line.Right.IndexOf(diffSearch, StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
         private VisualElement BuildShelfBody()
@@ -732,8 +1087,88 @@ namespace Orbiters.UnitGit.Editor
                 fixedPaneSize,
                 TwoPaneSplitViewOrientation.Horizontal);
             split.AddToClassList("unitgit-split-view");
-            split.RegisterCallback<GeometryChangedEvent>(_ => SaveSplitSize(split, prefKey, fixedPaneIndex));
+            TrackSplitDrag(split, prefKey, fixedPaneIndex);
             return split;
+        }
+
+        private void TrackSplitDrag(TwoPaneSplitView split, string prefKey, int fixedPaneIndex)
+        {
+            bool handlersInstalled = false;
+            bool isDragging = false;
+            split.RegisterCallback<PointerDownEvent>(evt =>
+            {
+                if (IsPointerNearSplitDivider(split, fixedPaneIndex, evt.position))
+                {
+                    isDragging = true;
+                }
+            });
+            split.RegisterCallback<PointerUpEvent>(_ =>
+            {
+                if (!isDragging)
+                {
+                    return;
+                }
+
+                isDragging = false;
+                SaveSplitSize(split, prefKey, fixedPaneIndex);
+            });
+            split.RegisterCallback<PointerCaptureOutEvent>(_ =>
+            {
+                if (!isDragging)
+                {
+                    return;
+                }
+
+                isDragging = false;
+                SaveSplitSize(split, prefKey, fixedPaneIndex);
+            });
+
+            split.RegisterCallback<GeometryChangedEvent>(_ =>
+            {
+                if (handlersInstalled)
+                {
+                    if (isDragging)
+                    {
+                        SaveSplitSize(split, prefKey, fixedPaneIndex);
+                    }
+
+                    return;
+                }
+
+                VisualElement dragline = split.Q(className: "unity-two-pane-split-view__dragline-anchor")
+                    ?? split.Q(className: "unity-two-pane-split-view__dragline");
+                if (dragline == null)
+                {
+                    return;
+                }
+
+                handlersInstalled = true;
+                dragline.RegisterCallback<PointerDownEvent>(_ => isDragging = true);
+                dragline.RegisterCallback<PointerUpEvent>(_ =>
+                {
+                    if (!isDragging)
+                    {
+                        return;
+                    }
+
+                    isDragging = false;
+                    SaveSplitSize(split, prefKey, fixedPaneIndex);
+                });
+            });
+        }
+
+        private static bool IsPointerNearSplitDivider(TwoPaneSplitView split, int fixedPaneIndex, Vector2 worldPosition)
+        {
+            if (split == null || split.childCount <= fixedPaneIndex)
+            {
+                return false;
+            }
+
+            Vector2 localPosition = split.WorldToLocal(worldPosition);
+            float dividerX = fixedPaneIndex == 0
+                ? split[fixedPaneIndex].resolvedStyle.width
+                : split.resolvedStyle.width - split[fixedPaneIndex].resolvedStyle.width;
+            return Mathf.Abs(localPosition.x - dividerX) <= 10f;
         }
 
         private void SaveSplitSize(TwoPaneSplitView split, string prefKey, int fixedPaneIndex)
@@ -760,7 +1195,7 @@ namespace Orbiters.UnitGit.Editor
             rail.Add(BuildIconRailButton(UnitGitIconKind.Update, "Update selected branch", UpdateSelectedBranch));
             rail.Add(BuildIconRailButton(UnitGitIconKind.Delete, "Delete selected branch", DeleteSelectedBranch));
             rail.Add(BuildIconRailButton(UnitGitIconKind.Fetch, "Fetch", Fetch));
-            rail.Add(BuildIconRailButton(UnitGitIconKind.GitHub, "GitHub remote setup", OpenGitHubSetup));
+            rail.Add(BuildIconRailButton(UnitGitIconKind.GitHub, "Remote setup", OpenRemoteSetup));
             return rail;
         }
 
@@ -978,18 +1413,28 @@ namespace Orbiters.UnitGit.Editor
             toolbar.AddToClassList("unitgit-log-toolbar");
 
             var search = new TextField();
-            search.value = logSearch;
+            search.value = logSearchDraft;
             search.AddToClassList("unitgit-log-search");
             search.RegisterValueChangedCallback(evt =>
             {
-                logSearch = evt.newValue;
-                RefreshSnapshot();
+                logSearchDraft = evt.newValue;
+                QueueLogSearchRefresh();
             });
             toolbar.Add(search);
 
+            int totalCommits = snapshot.Commits.Count;
+            int pageCount = Math.Max(1, (totalCommits + CommitPageSize - 1) / CommitPageSize);
+            logPage = Mathf.Clamp(logPage, 0, pageCount - 1);
+
             toolbar.Add(BuildToolbarChip("Branch: " + Shorten(snapshot.CurrentBranch, 28)));
-            toolbar.Add(BuildToolbarChip("User"));
-            toolbar.Add(BuildToolbarChip("Date"));
+            toolbar.Add(BuildToolbarChip(totalCommits + " commits"));
+            if (pageCount > 1)
+            {
+                toolbar.Add(BuildToolbarChip("Page " + (logPage + 1) + "/" + pageCount));
+                toolbar.Add(BuildActionButton("Prev", string.Empty, PreviousLogPage));
+                toolbar.Add(BuildActionButton("Next", string.Empty, NextLogPage));
+            }
+
             toolbar.Add(BuildActionButton("Refresh", string.Empty, RefreshSnapshot));
             toolbar.Add(BuildActionButton("Fetch", string.Empty, Fetch));
             toolbar.Add(BuildActionButton("Pull", string.Empty, PullFastForward));
@@ -1014,16 +1459,43 @@ namespace Orbiters.UnitGit.Editor
             else
             {
                 int index = 0;
-                int totalCommits = snapshot.Commits.Count;
-                foreach (UnitGitCommit commit in snapshot.Commits)
+                var visibleCommits = snapshot.Commits
+                    .Skip(logPage * CommitPageSize)
+                    .Take(CommitPageSize)
+                    .ToList();
+                foreach (UnitGitCommit commit in visibleCommits)
                 {
-                    scroll.Add(BuildCommitRow(commit, index, totalCommits));
+                    scroll.Add(BuildCommitRow(commit, index, visibleCommits.Count));
                     index++;
                 }
             }
 
             pane.Add(scroll);
             return pane;
+        }
+
+        private void PreviousLogPage()
+        {
+            if (logPage <= 0)
+            {
+                return;
+            }
+
+            logPage--;
+            RebuildContent();
+        }
+
+        private void NextLogPage()
+        {
+            int totalCommits = snapshot != null ? snapshot.Commits.Count : 0;
+            int pageCount = Math.Max(1, (totalCommits + CommitPageSize - 1) / CommitPageSize);
+            if (logPage >= pageCount - 1)
+            {
+                return;
+            }
+
+            logPage++;
+            RebuildContent();
         }
 
         private VisualElement BuildDetailsPane()
@@ -1398,13 +1870,104 @@ namespace Orbiters.UnitGit.Editor
             return button;
         }
 
+        private bool ConfirmGitOperation(string title, string actionLabel, string command, string summary, string warning, int? affectedFileCount)
+        {
+            return EditorUtility.DisplayDialog(
+                title,
+                BuildOperationPreview(command, summary, warning, affectedFileCount),
+                actionLabel,
+                "Cancel");
+        }
+
+        private string BuildOperationPreview(string command, string summary, string warning, int? affectedFileCount)
+        {
+            var builder = new System.Text.StringBuilder();
+            if (!string.IsNullOrWhiteSpace(summary))
+            {
+                builder.AppendLine(summary.Trim());
+                builder.AppendLine();
+            }
+
+            builder.AppendLine("Current branch: " + GetPreviewBranchName());
+            builder.AppendLine("Affected files: " + (affectedFileCount.HasValue ? affectedFileCount.Value.ToString() : "not counted"));
+            builder.AppendLine("Command:");
+            foreach (string line in SplitPreviewLines(command))
+            {
+                builder.AppendLine("  " + line);
+            }
+
+            if (!string.IsNullOrWhiteSpace(warning))
+            {
+                builder.AppendLine();
+                builder.AppendLine("Warning: " + warning.Trim());
+            }
+
+            return builder.ToString().TrimEnd();
+        }
+
+        private static IEnumerable<string> SplitPreviewLines(string command)
+        {
+            if (string.IsNullOrWhiteSpace(command))
+            {
+                yield return "(none)";
+                yield break;
+            }
+
+            foreach (string line in command.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+            {
+                if (!string.IsNullOrWhiteSpace(line))
+                {
+                    yield return line;
+                }
+            }
+        }
+
+        private string GetPreviewBranchName()
+        {
+            if (snapshot != null && !string.IsNullOrWhiteSpace(snapshot.CurrentBranch))
+            {
+                return snapshot.CurrentBranch;
+            }
+
+            return "(none)";
+        }
+
+        private int GetLocalChangeCount()
+        {
+            return snapshot != null ? snapshot.Changes.Count : 0;
+        }
+
+        private int GetStagedChangeCount()
+        {
+            return snapshot != null ? snapshot.Changes.Count(change => change.IsStaged) : 0;
+        }
+
+        private static string GitCommand(params string[] arguments)
+        {
+            return UnitGitService.FormatCommandLine("git", arguments);
+        }
+
+        private static string RemoteCliCommand(UnitGitRemoteProvider provider, params string[] arguments)
+        {
+            return UnitGitService.FormatCommandLine(provider == UnitGitRemoteProvider.GitLab ? "glab" : "gh", arguments);
+        }
+
+        private string GetInitializeCommandPreview()
+        {
+            return GitCommand("init") + "\n" +
+                   GitCommand("add", "-A", "--", ".") + "\n" +
+                   GitCommand("commit", "-m", "Initial commit");
+        }
+
         private void InitializeProjectGit()
         {
-            if (!EditorUtility.DisplayDialog(
+            if (!ConfirmGitOperation(
                     "Initialize Project Git",
-                    "This will create a Git repository at the Unity project root, update .gitignore if needed, stage the current state, and create an initial commit.",
                     "Initialize",
-                    "Cancel"))
+                    GetInitializeCommandPreview(),
+                    "Create a Git repository at the Unity project root, update .gitignore if needed, stage the current project state, and create the first commit.",
+                    "This can take several minutes on large Unity projects.",
+                    null))
             {
                 return;
             }
@@ -1445,10 +2008,19 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            string message = selectedBranch.IsRemote
-                ? "Delete the local remote-tracking branch " + selectedBranch.Name + "? This will not push a remote deletion."
-                : "Delete local branch " + selectedBranch.Name + "?";
-            if (!EditorUtility.DisplayDialog("Delete Branch", message, "Delete", "Cancel"))
+            string command = selectedBranch.IsRemote
+                ? GitCommand("branch", "-dr", selectedBranch.Name)
+                : GitCommand("branch", "-d", selectedBranch.Name);
+            string warning = selectedBranch.IsRemote
+                ? "This deletes only the local remote-tracking branch. It does not push a remote deletion."
+                : "This removes the local branch ref. Git may refuse if the branch is not merged.";
+            if (!ConfirmGitOperation(
+                    "Delete Branch",
+                    "Delete",
+                    command,
+                    "Delete branch " + selectedBranch.Name + ".",
+                    warning,
+                    0))
             {
                 return;
             }
@@ -1461,31 +2033,59 @@ namespace Orbiters.UnitGit.Editor
             RunAction("fetch", () => gitService.Fetch());
         }
 
-        private void OpenGitHubSetup()
+        private void OpenRemoteSetup()
         {
             UnitGitGitHubSetupWindow.Open(
-                GetDefaultGitHubRepositoryName(),
-                RunGitHubLogin,
-                CreateGitHubRemote);
+                GetDefaultRemoteRepositoryName(),
+                RunRemoteProviderLogin,
+                CreateRemoteRepository);
         }
 
-        private void RunGitHubLogin()
+        private void RunRemoteProviderLogin(UnitGitRemoteProvider provider)
         {
-            RunAction("github login", () => gitService.GitHubLogin());
+            RunAction(GetRemoteProviderCommandLabel(provider) + " login", () =>
+            {
+                return provider == UnitGitRemoteProvider.GitLab
+                    ? gitService.GitLabLogin()
+                    : gitService.GitHubLogin();
+            });
         }
 
-        private void CreateGitHubRemote(string repositoryName, string remoteName, bool isPrivate)
+        private void CreateRemoteRepository(UnitGitRemoteProvider provider, string repositoryName, string remoteName, bool isPrivate)
         {
-            RunAction("github create remote", () => gitService.CreateGitHubRemoteRepository(repositoryName, remoteName, isPrivate));
+            remoteName = string.IsNullOrWhiteSpace(remoteName) ? "origin" : remoteName.Trim();
+            string repository = string.IsNullOrWhiteSpace(repositoryName) ? string.Empty : repositoryName.Trim();
+            string command = provider == UnitGitRemoteProvider.GitLab
+                ? RemoteCliCommand(provider, "repo", "create", repository, "--remoteName", remoteName, isPrivate ? "--private" : "--public")
+                : RemoteCliCommand(provider, "repo", "create", repository, "--source", gitService.ProjectRoot, "--remote", remoteName, isPrivate ? "--private" : "--public");
+            if (!ConfirmGitOperation(
+                    "Create Remote Repository",
+                    "Create",
+                    command,
+                    "Create a " + GetRemoteProviderCommandLabel(provider) + " remote repository and register the local remote.",
+                    "This does not push commits.",
+                    0))
+            {
+                return;
+            }
+
+            RunAction(GetRemoteProviderCommandLabel(provider) + " create remote", () =>
+            {
+                return provider == UnitGitRemoteProvider.GitLab
+                    ? gitService.CreateGitLabRemoteRepository(repositoryName, remoteName, isPrivate)
+                    : gitService.CreateGitHubRemoteRepository(repositoryName, remoteName, isPrivate);
+            });
         }
 
         private void PullFastForward()
         {
-            if (!EditorUtility.DisplayDialog(
+            if (!ConfirmGitOperation(
                     "Pull",
-                    "Run git pull --ff-only on the current branch?",
                     "Pull",
-                    "Cancel"))
+                    GitCommand("pull", "--ff-only"),
+                    "Fast-forward the current branch from its upstream.",
+                    "This updates the branch and working tree. Git will refuse non-fast-forward merges.",
+                    GetLocalChangeCount()))
             {
                 return;
             }
@@ -1495,16 +2095,50 @@ namespace Orbiters.UnitGit.Editor
 
         private void StageAll()
         {
+            if (!ConfirmGitOperation(
+                    "Stage All Changes",
+                    "Stage",
+                    GitCommand("add", "-A"),
+                    "Stage all tracked, untracked, modified, and deleted files.",
+                    string.Empty,
+                    GetLocalChangeCount()))
+            {
+                return;
+            }
+
             RunAction("stage all", () => gitService.StageAll());
         }
 
         private void UnstageAll()
         {
+            if (!ConfirmGitOperation(
+                    "Unstage All Changes",
+                    "Unstage",
+                    GitCommand("reset"),
+                    "Move all staged changes back to the working tree.",
+                    string.Empty,
+                    GetStagedChangeCount()))
+            {
+                return;
+            }
+
             RunAction("unstage all", () => gitService.UnstageAll());
         }
 
         private void CommitStaged()
         {
+            string message = string.IsNullOrWhiteSpace(commitMessage) ? string.Empty : commitMessage.Trim();
+            if (!ConfirmGitOperation(
+                    "Commit Staged Changes",
+                    "Commit",
+                    GitCommand("commit", "-m", message),
+                    "Create a commit from the staged changes.",
+                    string.Empty,
+                    GetStagedChangeCount()))
+            {
+                return;
+            }
+
             RunAction("commit", () => gitService.Commit(commitMessage));
             if (snapshot != null && snapshot.HasRepository)
             {
@@ -1514,7 +2148,19 @@ namespace Orbiters.UnitGit.Editor
 
         private void ShelveAll()
         {
-            RunAction("shelve", () => gitService.ShelveAll("Unit Git shelf " + DateTime.Now.ToString("yyyy-MM-dd HH:mm")));
+            string shelfMessage = "Unit Git shelf " + DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+            if (!ConfirmGitOperation(
+                    "Shelve All Changes",
+                    "Shelve",
+                    GitCommand("stash", "push", "-u", "-m", shelfMessage),
+                    "Move local changes into a Git stash entry.",
+                    "This rewrites the working tree back to HEAD after creating the shelf.",
+                    GetLocalChangeCount()))
+            {
+                return;
+            }
+
+            RunAction("shelve", () => gitService.ShelveAll(shelfMessage));
         }
 
         private void CheckoutSelectedBranch()
@@ -1526,11 +2172,16 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            if (!EditorUtility.DisplayDialog(
+            string command = selectedBranch.IsRemote
+                ? GitCommand("checkout", "-t", selectedBranch.Name)
+                : GitCommand("checkout", selectedBranch.Name);
+            if (!ConfirmGitOperation(
                     "Checkout Branch",
-                    "Checkout " + selectedBranch.Name + "?",
                     "Checkout",
-                    "Cancel"))
+                    command,
+                    "Checkout " + selectedBranch.Name + ".",
+                    "This can rewrite working tree files. Git will refuse if local changes would be overwritten.",
+                    GetLocalChangeCount()))
             {
                 return;
             }
@@ -1547,6 +2198,17 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
+            if (!ConfirmGitOperation(
+                    "Apply Shelf",
+                    "Apply",
+                    GitCommand("stash", "apply", selectedShelf),
+                    "Apply " + selectedShelf + " to the working tree.",
+                    "This can modify local files and may produce conflicts.",
+                    GetLocalChangeCount()))
+            {
+                return;
+            }
+
             RunAction("stash apply " + selectedShelf, () => gitService.RunGit(30000, "stash", "apply", selectedShelf));
         }
 
@@ -1559,11 +2221,13 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            if (!EditorUtility.DisplayDialog(
+            if (!ConfirmGitOperation(
                     "Drop Shelf",
-                    "Drop " + selectedShelf + "?",
                     "Drop",
-                    "Cancel"))
+                    GitCommand("stash", "drop", selectedShelf),
+                    "Drop " + selectedShelf + ".",
+                    "This deletes the selected shelf entry.",
+                    0))
             {
                 return;
             }
@@ -1574,28 +2238,63 @@ namespace Orbiters.UnitGit.Editor
 
         private void RunAction(string label, Func<GitCommandResult> action)
         {
+            if (busy)
+            {
+                return;
+            }
+
             busy = true;
+            AppendConsole(label, "started");
             BuildShell();
             RebuildContent();
+            EnsureEditorUpdatePump();
 
-            GitCommandResult result;
+            Task.Run(() =>
+                {
+                    gitService.ProcessLogReceived = line => QueueConsoleLine(label, line);
+                    try
+                    {
+                        return ExecuteGitAction(action);
+                    }
+                    finally
+                    {
+                        gitService.ProcessLogReceived = null;
+                    }
+                })
+                .ContinueWith(task => QueueMainThreadAction(() => CompleteGitAction(label, task)));
+        }
+
+        private static GitCommandResult ExecuteGitAction(Func<GitCommandResult> action)
+        {
             try
             {
-                result = action();
+                return action();
             }
             catch (Exception ex)
             {
-                result = new GitCommandResult
+                return new GitCommandResult
                 {
                     ExitCode = 1,
                     StandardError = ex.Message
                 };
             }
-            finally
+        }
+
+        private void CompleteGitAction(string label, Task<GitCommandResult> task)
+        {
+            if (this == null)
             {
-                busy = false;
+                return;
             }
 
+            busy = false;
+            GitCommandResult result = task.Status == TaskStatus.RanToCompletion
+                ? task.Result
+                : new GitCommandResult
+                {
+                    ExitCode = 1,
+                    StandardError = task.Exception != null ? task.Exception.GetBaseException().Message : "The command failed."
+                };
             AppendConsole(label, result);
             if (result == null || !result.Success)
             {
@@ -1617,11 +2316,122 @@ namespace Orbiters.UnitGit.Editor
 
         private void AppendConsole(string label, string message)
         {
-            consoleLines.Insert(0, DateTime.Now.ToString("HH:mm:ss") + " " + label + " - " + message);
+            AddConsoleLine(FormatConsoleLine(label, message));
+        }
+
+        private void QueueConsoleLine(string label, string message)
+        {
+            pendingConsoleLines.Enqueue(FormatConsoleLine(label, SanitizeConsoleMessage(message)));
+        }
+
+        private void QueueMainThreadAction(Action action)
+        {
+            if (action != null)
+            {
+                pendingMainThreadActions.Enqueue(action);
+            }
+        }
+
+        private void EnsureEditorUpdatePump()
+        {
+            if (editorUpdatePumpActive)
+            {
+                return;
+            }
+
+            editorUpdatePumpActive = true;
+            EditorApplication.update += DrainEditorQueues;
+        }
+
+        private void DrainEditorQueues()
+        {
+            while (pendingMainThreadActions.TryDequeue(out Action action))
+            {
+                action();
+            }
+
+            bool changed = false;
+            while (pendingConsoleLines.TryDequeue(out string line))
+            {
+                AddConsoleLine(line);
+                changed = true;
+            }
+
+            if (!busy && !refreshingSnapshot && pendingConsoleLines.IsEmpty && pendingMainThreadActions.IsEmpty)
+            {
+                editorUpdatePumpActive = false;
+                EditorApplication.update -= DrainEditorQueues;
+            }
+
+            if (changed && (activeTab == UnitGitTab.Console || activeTab == UnitGitTab.Shelf))
+            {
+                RememberScrollOffsets();
+                RebuildContent();
+                RestoreScrollOffsets();
+            }
+        }
+
+        private void AddConsoleLine(string line)
+        {
+            consoleLines.Insert(0, line);
             while (consoleLines.Count > MaxConsoleLines)
             {
                 consoleLines.RemoveAt(consoleLines.Count - 1);
             }
+        }
+
+        private static string FormatConsoleLine(string label, string message)
+        {
+            return DateTime.Now.ToString("HH:mm:ss") + " " + label + " - " + SanitizeConsoleMessage(message);
+        }
+
+        private static bool ShouldLogRefreshProcessLine(string line)
+        {
+            return line != null &&
+                   (line.StartsWith(">", StringComparison.Ordinal) ||
+                    line.StartsWith("cwd:", StringComparison.Ordinal) ||
+                    line.StartsWith("exit:", StringComparison.Ordinal) ||
+                    line.StartsWith("timed out", StringComparison.Ordinal) ||
+                    line.StartsWith("error:", StringComparison.Ordinal));
+        }
+
+        private static string SanitizeConsoleMessage(string message)
+        {
+            if (string.IsNullOrEmpty(message))
+            {
+                return string.Empty;
+            }
+
+            bool hasControlCharacter = false;
+            for (int i = 0; i < message.Length; i++)
+            {
+                if (char.IsControl(message[i]) && message[i] != '\t')
+                {
+                    hasControlCharacter = true;
+                    break;
+                }
+            }
+
+            if (!hasControlCharacter)
+            {
+                return message;
+            }
+
+            var sanitized = new System.Text.StringBuilder(message.Length);
+            for (int i = 0; i < message.Length; i++)
+            {
+                char character = message[i];
+                if (char.IsControl(character) && character != '\t')
+                {
+                    sanitized.Append("\\x");
+                    sanitized.Append(((int)character).ToString("X2"));
+                    continue;
+                }
+
+                sanitized.Append(character);
+            }
+
+            return sanitized.ToString();
         }
 
         private List<string> GetShelves()
@@ -1632,11 +2442,7 @@ namespace Orbiters.UnitGit.Editor
                 return new List<string>();
             }
 
-            return result.StandardOutput
-                .Replace("\r\n", "\n")
-                .Split('\n')
-                .Where(line => !string.IsNullOrWhiteSpace(line))
-                .ToList();
+            return UnitGitService.ParseStashList(result.StandardOutput);
         }
 
         private bool GetFoldoutExpanded(string prefKey, bool defaultValue)
@@ -1894,7 +2700,12 @@ namespace Orbiters.UnitGit.Editor
             return value.Substring(0, maxLength - 3) + "...";
         }
 
-        private string GetDefaultGitHubRepositoryName()
+        private static string GetRemoteProviderCommandLabel(UnitGitRemoteProvider provider)
+        {
+            return provider == UnitGitRemoteProvider.GitLab ? "gitlab" : "github";
+        }
+
+        private string GetDefaultRemoteRepositoryName()
         {
             string root = snapshot != null && !string.IsNullOrWhiteSpace(snapshot.ProjectRoot)
                 ? snapshot.ProjectRoot
@@ -1985,24 +2796,31 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
+        private sealed class SnapshotRefreshResult
+        {
+            public UnitGitSnapshot Snapshot;
+            public UnitGitCommitDetails SelectedDetails;
+        }
+
         private sealed class UnitGitGitHubSetupWindow : EditorWindow
         {
+            private UnitGitRemoteProvider provider = UnitGitRemoteProvider.GitHub;
             private string repositoryName;
             private string remoteName;
             private bool isPrivate = true;
-            private Action onLogin;
-            private Action<string, string, bool> onCreateRemote;
+            private Action<UnitGitRemoteProvider> onLogin;
+            private Action<UnitGitRemoteProvider, string, string, bool> onCreateRemote;
 
-            public static void Open(string defaultRepositoryName, Action onLogin, Action<string, string, bool> onCreateRemote)
+            public static void Open(string defaultRepositoryName, Action<UnitGitRemoteProvider> onLogin, Action<UnitGitRemoteProvider, string, string, bool> onCreateRemote)
             {
                 var window = CreateInstance<UnitGitGitHubSetupWindow>();
-                window.titleContent = new GUIContent("GitHub Remote");
+                window.titleContent = new GUIContent("Remote Setup");
                 window.repositoryName = defaultRepositoryName;
                 window.remoteName = "origin";
                 window.onLogin = onLogin;
                 window.onCreateRemote = onCreateRemote;
-                window.minSize = new Vector2(380f, 220f);
-                window.maxSize = new Vector2(560f, 260f);
+                window.minSize = new Vector2(420f, 260f);
+                window.maxSize = new Vector2(620f, 320f);
                 window.ShowUtility();
             }
 
@@ -2016,13 +2834,18 @@ namespace Orbiters.UnitGit.Editor
 
                 rootVisualElement.AddToClassList("unitgit-github-setup");
 
-                var title = new Label("GitHub CLI remote setup");
+                var title = new Label("Remote CLI setup");
                 title.AddToClassList("unitgit-github-setup-title");
                 rootVisualElement.Add(title);
 
-                var body = new Label("Use GitHub CLI to sign in, create a GitHub repository, and set the local remote. This does not push commits.");
+                var body = new Label("Use GitHub CLI or GitLab CLI to sign in, create a remote repository, and set the local remote. This does not push commits.");
                 body.AddToClassList("unitgit-github-setup-body");
                 rootVisualElement.Add(body);
+
+                var providerField = new EnumField("Provider", provider);
+                providerField.AddToClassList("unitgit-github-setup-field");
+                providerField.RegisterValueChangedCallback(evt => provider = (UnitGitRemoteProvider)evt.newValue);
+                rootVisualElement.Add(providerField);
 
                 var repositoryField = new TextField("Repository");
                 repositoryField.value = repositoryName;
@@ -2044,10 +2867,10 @@ namespace Orbiters.UnitGit.Editor
 
                 var actions = new VisualElement();
                 actions.AddToClassList("unitgit-row-actions");
-                actions.Add(BuildSetupButton("Login with GitHub CLI", () => onLogin?.Invoke()));
+                actions.Add(BuildSetupButton("Login with Selected CLI", () => onLogin?.Invoke(provider)));
                 actions.Add(BuildSetupButton("Create Remote", () =>
                 {
-                    onCreateRemote?.Invoke(repositoryName, remoteName, isPrivate);
+                    onCreateRemote?.Invoke(provider, repositoryName, remoteName, isPrivate);
                     Close();
                 }));
                 actions.Add(BuildSetupButton("Cancel", Close));

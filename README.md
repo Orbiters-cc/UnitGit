@@ -18,6 +18,17 @@ Unit Git intentionally does not expose a push action. Pushes should happen only 
 
 - `Runtime`: package metadata constants
 - `Editor`: Git subprocess wrapper, project initializer, UI Toolkit window, and USS styling
+- `Tests/Editor`: parser/process and temp-repo smoke tests for the editor package
+
+## Validation
+
+Run deterministic package checks from `Tools > Orbiters > Unit Git > Health Checks > All Deterministic`.
+
+For release automation, call the same hook in Unity batchmode:
+
+```powershell
+Unity.exe -batchmode -nographics -projectPath "<project>" -executeMethod Orbiters.UnitGit.Editor.UnitGitEditorHealthChecks.RunAllBatchmode -quit
+```
 
 ## Git
 

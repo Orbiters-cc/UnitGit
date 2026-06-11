@@ -13,22 +13,29 @@ namespace Orbiters.UnitGit.Editor
     {
         private const char FieldSeparator = '\x1f';
         private const char BranchFieldSeparator = '\t';
+        private const int MaxUntrackedDiffPreviewBytes = 512 * 1024;
+        private const int BinarySniffBytes = 4096;
         private const int DefaultTimeoutMilliseconds = 30000;
         public const int LongTimeoutMilliseconds = 900000;
         private static readonly Regex AheadRegex = new Regex(@"ahead\s+(\d+)", RegexOptions.Compiled);
         private static readonly Regex BehindRegex = new Regex(@"behind\s+(\d+)", RegexOptions.Compiled);
 
         public UnitGitService()
+            : this(GetUnityProjectRoot())
         {
-            ProjectRoot = GetUnityProjectRoot();
+        }
+
+        public UnitGitService(string projectRoot)
+        {
+            ProjectRoot = projectRoot;
         }
 
         public string ProjectRoot { get; private set; }
 
+        public UnitGitProcessLogHandler ProcessLogReceived { get; set; }
+
         public UnitGitSnapshot BuildSnapshot(string logSearch)
         {
-            ProjectRoot = GetUnityProjectRoot();
-
             var snapshot = new UnitGitSnapshot
             {
                 ProjectRoot = ProjectRoot,
@@ -223,52 +230,84 @@ namespace Orbiters.UnitGit.Editor
             }
 
             diff.Path = change.Path;
-            diff.LeftTitle = change.IsStaged && !change.IsUnstaged ? "HEAD" : "Repository";
+            diff.LeftTitle = "Repository";
             diff.RightTitle = "Current version";
 
-            string output = string.Empty;
-            var result = RunGit(DefaultTimeoutMilliseconds, "diff", "--no-ext-diff", "--unified=80", "--", change.Path);
-            if (result.Success)
-            {
-                output = result.StandardOutput;
-            }
+            GitCommandResult unstagedResult = null;
+            GitCommandResult stagedResult = null;
+            string unstagedOutput = string.Empty;
+            string stagedOutput = string.Empty;
 
-            if (string.IsNullOrWhiteSpace(output))
+            if (change.IsUnstaged && !change.IsUntracked)
             {
-                var cached = RunGit(DefaultTimeoutMilliseconds, "diff", "--cached", "--no-ext-diff", "--unified=80", "--", change.Path);
-                if (cached.Success)
+                unstagedResult = RunGit(DefaultTimeoutMilliseconds, "diff", "--no-ext-diff", "--unified=80", "--", change.Path);
+                if (unstagedResult.Success)
                 {
-                    output = cached.StandardOutput;
-                    diff.LeftTitle = "HEAD";
-                    diff.RightTitle = "Staged";
+                    unstagedOutput = unstagedResult.StandardOutput;
                 }
             }
 
-            if (string.IsNullOrWhiteSpace(output) && change.IsUntracked)
+            if (change.IsStaged)
+            {
+                stagedResult = RunGit(DefaultTimeoutMilliseconds, "diff", "--cached", "--no-ext-diff", "--unified=80", "--", change.Path);
+                if (stagedResult.Success)
+                {
+                    stagedOutput = stagedResult.StandardOutput;
+                }
+            }
+
+            bool hasStagedDiff = !string.IsNullOrWhiteSpace(stagedOutput);
+            bool hasUnstagedDiff = !string.IsNullOrWhiteSpace(unstagedOutput);
+            if (hasStagedDiff || hasUnstagedDiff)
+            {
+                if (hasStagedDiff && hasUnstagedDiff)
+                {
+                    diff.LeftTitle = "HEAD / Index";
+                    diff.RightTitle = "Index / Working tree";
+                    AppendDiffSection(diff, "Staged changes (HEAD -> index)");
+                    ParseUnifiedDiff(stagedOutput, diff);
+                    AppendDiffSection(diff, "Unstaged changes (index -> working tree)");
+                    ParseUnifiedDiff(unstagedOutput, diff);
+                }
+                else if (hasStagedDiff)
+                {
+                    diff.LeftTitle = "HEAD";
+                    diff.RightTitle = "Staged";
+                    ParseUnifiedDiff(stagedOutput, diff);
+                }
+                else
+                {
+                    ParseUnifiedDiff(unstagedOutput, diff);
+                }
+
+                if (diff.Lines.Count == 0)
+                {
+                    diff.Lines.Add(new UnitGitDiffLine
+                    {
+                        Right = "No textual differences to display.",
+                        Kind = UnitGitDiffLineKind.Context
+                    });
+                }
+
+                return diff;
+            }
+
+            if (change.IsUntracked)
             {
                 PopulateUntrackedDiff(diff, change.Path);
                 return diff;
             }
 
-            if (string.IsNullOrWhiteSpace(output))
+            GitCommandResult failedResult = stagedResult != null && !stagedResult.Success
+                ? stagedResult
+                : unstagedResult;
+            diff.Lines.Add(new UnitGitDiffLine
             {
-                diff.Lines.Add(new UnitGitDiffLine
-                {
-                    Right = result.Message,
-                    Kind = UnitGitDiffLineKind.Context
-                });
-                return diff;
-            }
-
-            ParseUnifiedDiff(output, diff);
-            if (diff.Lines.Count == 0)
-            {
-                diff.Lines.Add(new UnitGitDiffLine
-                {
-                    Right = "No textual differences to display.",
-                    Kind = UnitGitDiffLineKind.Context
-                });
-            }
+                Right = failedResult != null && !string.IsNullOrWhiteSpace(failedResult.Message)
+                    ? failedResult.Message
+                    : "No textual differences to display.",
+                Kind = UnitGitDiffLineKind.Context
+            });
 
             return diff;
         }
@@ -364,7 +403,7 @@ namespace Orbiters.UnitGit.Editor
 
         public GitCommandResult RunGit(int timeoutMilliseconds, params string[] arguments)
         {
-            return RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, arguments);
+            return RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, ProcessLogReceived, arguments);
         }
 
         public bool IsGitAvailable()
@@ -377,10 +416,10 @@ namespace Orbiters.UnitGit.Editor
         {
             if (!IsGitHubCliAvailable())
             {
-                return Failure("GitHub CLI was not found on PATH. Install GitHub CLI, then reopen Unity.");
+                return Failure("GitHub CLI was not found. Unit Git checked PATH and common Windows install locations. Install GitHub CLI, then reopen Unity.");
             }
 
-            return RunGitHubCli(LongTimeoutMilliseconds, "auth", "login", "--web", "--git-protocol", "https");
+            return RunGitHubCli(LongTimeoutMilliseconds, "auth", "login", "--hostname", "github.com", "--web", "--clipboard", "--git-protocol", "https", "--skip-ssh-key");
         }
 
         public GitCommandResult CreateGitHubRemoteRepository(string repositoryName, string remoteName, bool isPrivate)
@@ -415,12 +454,60 @@ namespace Orbiters.UnitGit.Editor
 
         private GitCommandResult RunGitHubCli(int timeoutMilliseconds, params string[] arguments)
         {
-            return RunProcess(GetGitHubCliExecutable(), "GitHub CLI command timed out.", ProjectRoot, timeoutMilliseconds, arguments);
+            return RunProcess(GetGitHubCliExecutable(), "GitHub CLI command timed out.", ProjectRoot, timeoutMilliseconds, ProcessLogReceived, arguments);
         }
 
         private bool IsGitHubCliAvailable()
         {
             return RunGitHubCli(10000, "--version").Success;
+        }
+
+        public GitCommandResult GitLabLogin()
+        {
+            if (!IsGitLabCliAvailable())
+            {
+                return Failure("GitLab CLI was not found. Unit Git checked PATH and common Windows install locations. Install GitLab CLI, then reopen Unity.");
+            }
+
+            return RunGitLabCli(LongTimeoutMilliseconds, "auth", "login", "--hostname", "gitlab.com", "--web", "--git-protocol", "https");
+        }
+
+        public GitCommandResult CreateGitLabRemoteRepository(string repositoryName, string remoteName, bool isPrivate)
+        {
+            if (!IsGitLabCliAvailable())
+            {
+                return Failure("GitLab CLI was not found. Unit Git checked PATH and common Windows install locations. Install GitLab CLI, then reopen Unity.");
+            }
+
+            if (string.IsNullOrWhiteSpace(repositoryName))
+            {
+                return Failure("GitLab repository path is required.");
+            }
+
+            remoteName = string.IsNullOrWhiteSpace(remoteName) ? "origin" : remoteName.Trim();
+            if (GetRemoteNames().Any(remote => string.Equals(remote, remoteName, StringComparison.OrdinalIgnoreCase)))
+            {
+                return Failure("Remote '" + remoteName + "' already exists.");
+            }
+
+            return RunGitLabCli(
+                LongTimeoutMilliseconds,
+                "repo",
+                "create",
+                repositoryName.Trim(),
+                "--remoteName",
+                remoteName,
+                isPrivate ? "--private" : "--public");
+        }
+
+        private GitCommandResult RunGitLabCli(int timeoutMilliseconds, params string[] arguments)
+        {
+            return RunProcess(GetGitLabCliExecutable(), "GitLab CLI command timed out.", ProjectRoot, timeoutMilliseconds, ProcessLogReceived, arguments);
+        }
+
+        private bool IsGitLabCliAvailable()
+        {
+            return RunGitLabCli(10000, "--version").Success;
         }
 
         private static string GetGitHubCliExecutable()
@@ -434,13 +521,44 @@ namespace Orbiters.UnitGit.Editor
 
             string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
             string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string chocolateyInstall = Environment.GetEnvironmentVariable("ChocolateyInstall");
             string[] candidates =
             {
                 Path.Combine(programFiles, "GitHub CLI", executableName),
-                Path.Combine(localAppData, "GitHub CLI", executableName)
+                Path.Combine(localAppData, "GitHub CLI", executableName),
+                Path.Combine(localAppData, "Programs", "GitHub CLI", executableName),
+                Path.Combine(localAppData, "Microsoft", "WinGet", "Links", executableName),
+                Path.Combine(userProfile, "scoop", "shims", executableName),
+                Path.Combine(string.IsNullOrWhiteSpace(chocolateyInstall) ? @"C:\ProgramData\chocolatey" : chocolateyInstall, "bin", executableName)
             };
 
             return candidates.FirstOrDefault(File.Exists) ?? "gh";
+        }
+
+        private static string GetGitLabCliExecutable()
+        {
+            const string executableName = "glab.exe";
+            string pathMatch = FindExecutableOnPath(executableName);
+            if (!string.IsNullOrWhiteSpace(pathMatch))
+            {
+                return pathMatch;
+            }
+
+            string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string chocolateyInstall = Environment.GetEnvironmentVariable("ChocolateyInstall");
+            string[] candidates =
+            {
+                Path.Combine(programFiles, "glab", "bin", executableName),
+                Path.Combine(localAppData, "Programs", "glab", executableName),
+                Path.Combine(localAppData, "Microsoft", "WinGet", "Links", executableName),
+                Path.Combine(userProfile, "scoop", "shims", executableName),
+                Path.Combine(string.IsNullOrWhiteSpace(chocolateyInstall) ? @"C:\ProgramData\chocolatey" : chocolateyInstall, "bin", executableName)
+            };
+
+            return candidates.FirstOrDefault(File.Exists) ?? "glab";
         }
 
         private static string FindExecutableOnPath(string executableName)
@@ -530,13 +648,51 @@ namespace Orbiters.UnitGit.Editor
                 "--all",
                 "--format=%(refname)\t%(refname:short)\t%(HEAD)\t%(upstream:short)\t%(objectname:short)");
 
-            var branches = new List<UnitGitBranch>();
             if (!result.Success)
             {
-                return branches;
+                return new List<UnitGitBranch>();
             }
 
-            foreach (string line in SplitLines(result.StandardOutput))
+            return ParseBranches(result.StandardOutput);
+        }
+
+        private bool HasCommits()
+        {
+            var result = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", "HEAD");
+            return result.Success;
+        }
+
+        private List<UnitGitCommit> GetCommits(string logSearch)
+        {
+            var args = new List<string>
+            {
+                "log",
+                "--all",
+                "--max-count=250",
+                "--date=relative",
+                "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%D"
+            };
+
+            var result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+            if (!result.Success)
+            {
+                return new List<UnitGitCommit>();
+            }
+
+            return ParseCommits(result.StandardOutput, logSearch);
+        }
+
+        internal static UnitGitSnapshot ParseStatusOutput(string output)
+        {
+            var snapshot = new UnitGitSnapshot();
+            ParseStatus(output, snapshot);
+            return snapshot;
+        }
+
+        internal static List<UnitGitBranch> ParseBranches(string output)
+        {
+            var branches = new List<UnitGitBranch>();
+            foreach (string line in SplitLines(output))
             {
                 var fields = line.Split(BranchFieldSeparator);
                 if (fields.Length < 5)
@@ -568,31 +724,10 @@ namespace Orbiters.UnitGit.Editor
                 .ToList();
         }
 
-        private bool HasCommits()
+        internal static List<UnitGitCommit> ParseCommits(string output, string logSearch)
         {
-            var result = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", "HEAD");
-            return result.Success;
-        }
-
-        private List<UnitGitCommit> GetCommits(string logSearch)
-        {
-            var args = new List<string>
-            {
-                "log",
-                "--all",
-                "--max-count=250",
-                "--date=relative",
-                "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%D"
-            };
-
-            var result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
             var commits = new List<UnitGitCommit>();
-            if (!result.Success)
-            {
-                return commits;
-            }
-
-            foreach (string line in SplitLines(result.StandardOutput))
+            foreach (string line in SplitLines(output))
             {
                 var fields = line.Split(FieldSeparator);
                 if (fields.Length < 7)
@@ -646,7 +781,15 @@ namespace Orbiters.UnitGit.Editor
                    value.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private static void ParseStatus(string output, UnitGitSnapshot snapshot)
+        internal static List<string> ParseStashList(string output)
+        {
+            return SplitLines(output)
+                .Select(line => line.Trim())
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .ToList();
+        }
+
+        internal static void ParseStatus(string output, UnitGitSnapshot snapshot)
         {
             foreach (string line in SplitLines(output))
             {
@@ -680,7 +823,7 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
-        private static void ParseBranchStatus(string branchStatus, UnitGitSnapshot snapshot)
+        internal static void ParseBranchStatus(string branchStatus, UnitGitSnapshot snapshot)
         {
             string text = branchStatus;
             int bracketIndex = text.IndexOf(" [", StringComparison.Ordinal);
@@ -718,7 +861,7 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
-        private static string UnquotePath(string path)
+        internal static string UnquotePath(string path)
         {
             if (string.IsNullOrWhiteSpace(path))
             {
@@ -736,7 +879,7 @@ namespace Orbiters.UnitGit.Editor
             return path;
         }
 
-        private static IEnumerable<string> SplitLines(string text)
+        internal static IEnumerable<string> SplitLines(string text)
         {
             if (string.IsNullOrEmpty(text))
             {
@@ -758,6 +901,32 @@ namespace Orbiters.UnitGit.Editor
                 diff.Lines.Add(new UnitGitDiffLine
                 {
                     Right = "Untracked file is not available on disk.",
+                    Kind = UnitGitDiffLineKind.Context
+                });
+                return;
+            }
+
+            FileInfo info;
+            try
+            {
+                info = new FileInfo(fullPath);
+                if (info.Length > MaxUntrackedDiffPreviewBytes)
+                {
+                    AddSkippedUntrackedPreview(diff, "large file", info.Length);
+                    return;
+                }
+
+                if (LooksBinaryFile(fullPath))
+                {
+                    AddSkippedUntrackedPreview(diff, "binary file", info.Length);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                diff.Lines.Add(new UnitGitDiffLine
+                {
+                    Right = "Unable to inspect this untracked file: " + ex.Message,
                     Kind = UnitGitDiffLineKind.Context
                 });
                 return;
@@ -789,6 +958,57 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
+        private static void AddSkippedUntrackedPreview(UnitGitDiff diff, string reason, long bytes)
+        {
+            diff.Lines.Add(new UnitGitDiffLine
+            {
+                Right = "Untracked " + reason + " preview skipped (" + FormatBytes(bytes) + ").",
+                Kind = UnitGitDiffLineKind.Context
+            });
+        }
+
+        private static bool LooksBinaryFile(string fullPath)
+        {
+            var buffer = new byte[BinarySniffBytes];
+            int bytesRead;
+            using (var stream = File.OpenRead(fullPath))
+            {
+                bytesRead = stream.Read(buffer, 0, buffer.Length);
+            }
+
+            int suspiciousControls = 0;
+            for (int i = 0; i < bytesRead; i++)
+            {
+                byte value = buffer[i];
+                if (value == 0)
+                {
+                    return true;
+                }
+
+                if (value < 32 && value != 9 && value != 10 && value != 12 && value != 13)
+                {
+                    suspiciousControls++;
+                }
+            }
+
+            return bytesRead > 0 && suspiciousControls > bytesRead / 10;
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            if (bytes < 1024)
+            {
+                return bytes + " B";
+            }
+
+            if (bytes < 1024 * 1024)
+            {
+                return (bytes / 1024f).ToString("0.#") + " KB";
+            }
+
+            return (bytes / (1024f * 1024f)).ToString("0.#") + " MB";
+        }
+
         private string GetSafeProjectPath(string projectPath)
         {
             if (string.IsNullOrWhiteSpace(projectPath))
@@ -806,7 +1026,32 @@ namespace Orbiters.UnitGit.Editor
             return fullPath;
         }
 
-        private static void ParseUnifiedDiff(string output, UnitGitDiff diff)
+        private static void AppendDiffSection(UnitGitDiff diff, string title)
+        {
+            if (diff.Lines.Count > 0)
+            {
+                diff.Lines.Add(new UnitGitDiffLine
+                {
+                    Kind = UnitGitDiffLineKind.Context
+                });
+            }
+
+            diff.Lines.Add(new UnitGitDiffLine
+            {
+                Left = title,
+                Right = title,
+                Kind = UnitGitDiffLineKind.Hunk
+            });
+        }
+
+        internal static UnitGitDiff ParseUnifiedDiff(string output)
+        {
+            var diff = new UnitGitDiff();
+            ParseUnifiedDiff(output, diff);
+            return diff;
+        }
+
+        internal static void ParseUnifiedDiff(string output, UnitGitDiff diff)
         {
             var pendingRemoved = new Queue<string>();
             foreach (string rawLine in SplitLines(output))
@@ -893,6 +1138,17 @@ namespace Orbiters.UnitGit.Editor
 
         private static GitCommandResult RunProcess(string fileName, string timeoutMessage, string workingDirectory, int timeoutMilliseconds, params string[] arguments)
         {
+            return RunProcess(fileName, timeoutMessage, workingDirectory, timeoutMilliseconds, null, arguments);
+        }
+
+        private static GitCommandResult RunProcess(
+            string fileName,
+            string timeoutMessage,
+            string workingDirectory,
+            int timeoutMilliseconds,
+            UnitGitProcessLogHandler logHandler,
+            params string[] arguments)
+        {
             var result = new GitCommandResult();
             var output = new StringBuilder();
             var error = new StringBuilder();
@@ -903,7 +1159,7 @@ namespace Orbiters.UnitGit.Editor
                 {
                     FileName = fileName,
                     Arguments = string.Join(" ", arguments.Select(EscapeArgument).ToArray()),
-                    WorkingDirectory = Directory.Exists(workingDirectory) ? workingDirectory : Application.dataPath,
+                    WorkingDirectory = Directory.Exists(workingDirectory) ? workingDirectory : Directory.GetCurrentDirectory(),
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -911,6 +1167,8 @@ namespace Orbiters.UnitGit.Editor
                 };
 
                 startInfo.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
+                logHandler?.Invoke("> " + FormatCommandLine(fileName, arguments));
+                logHandler?.Invoke("cwd: " + startInfo.WorkingDirectory);
 
                 using (var process = new Process())
                 {
@@ -920,6 +1178,7 @@ namespace Orbiters.UnitGit.Editor
                         if (args.Data != null)
                         {
                             output.AppendLine(args.Data);
+                            logHandler?.Invoke("stdout: " + args.Data);
                         }
                     };
                     process.ErrorDataReceived += (sender, args) =>
@@ -927,6 +1186,7 @@ namespace Orbiters.UnitGit.Editor
                         if (args.Data != null)
                         {
                             error.AppendLine(args.Data);
+                            logHandler?.Invoke("stderr: " + args.Data);
                         }
                     };
 
@@ -938,6 +1198,7 @@ namespace Orbiters.UnitGit.Editor
                     {
                         result.TimedOut = true;
                         result.ExitCode = 1;
+                        logHandler?.Invoke("timed out after " + (timeoutMilliseconds / 1000f).ToString("0.#") + " seconds");
                         try
                         {
                             process.Kill();
@@ -950,6 +1211,7 @@ namespace Orbiters.UnitGit.Editor
                     {
                         process.WaitForExit();
                         result.ExitCode = process.ExitCode;
+                        logHandler?.Invoke("exit: " + result.ExitCode);
                     }
                 }
             }
@@ -957,6 +1219,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 result.ExitCode = 1;
                 error.AppendLine(ex.Message);
+                logHandler?.Invoke("error: " + ex.Message);
             }
 
             result.StandardOutput = output.ToString();
@@ -975,7 +1238,15 @@ namespace Orbiters.UnitGit.Editor
             };
         }
 
-        private static string EscapeArgument(string argument)
+        internal static string FormatCommandLine(string fileName, params string[] arguments)
+        {
+            string suffix = arguments == null || arguments.Length == 0
+                ? string.Empty
+                : " " + string.Join(" ", arguments.Select(EscapeArgument).ToArray());
+            return EscapeArgument(fileName) + suffix;
+        }
+
+        internal static string EscapeArgument(string argument)
         {
             if (argument == null)
             {
@@ -999,16 +1270,29 @@ namespace Orbiters.UnitGit.Editor
 
             var escaped = new StringBuilder();
             escaped.Append('"');
+            int backslashes = 0;
             foreach (char c in argument)
             {
-                if (c == '"' || c == '\\')
+                if (c == '\\')
                 {
-                    escaped.Append('\\');
+                    backslashes++;
+                    continue;
                 }
 
+                if (c == '"')
+                {
+                    escaped.Append('\\', backslashes * 2 + 1);
+                    escaped.Append('"');
+                    backslashes = 0;
+                    continue;
+                }
+
+                escaped.Append('\\', backslashes);
+                backslashes = 0;
                 escaped.Append(c);
             }
 
+            escaped.Append('\\', backslashes * 2);
             escaped.Append('"');
             return escaped.ToString();
         }

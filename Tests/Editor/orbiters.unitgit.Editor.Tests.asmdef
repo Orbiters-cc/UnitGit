@@ -1,0 +1,21 @@
+{
+  "name": "orbiters.unitgit.Editor.Tests",
+  "references": [
+    "orbiters.unitgit",
+    "orbiters.unitgit.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}

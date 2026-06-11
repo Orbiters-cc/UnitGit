@@ -7,7 +7,6 @@ namespace Orbiters.UnitGit.Editor
     {
         ChevronCollapsed,
         ChevronExpanded,
-        Close,
         CreateBranch,
         Update,
         Delete,
@@ -59,10 +58,6 @@ namespace Orbiters.UnitGit.Editor
                         new Vector2(12.5f, 6f),
                         new Vector2(8f, 11f)
                     });
-                    break;
-                case UnitGitIconKind.Close:
-                    DrawSegment(painter, rect, 16f, 16f, new Vector2(4.5f, 4.5f), new Vector2(11.5f, 11.5f), 2f);
-                    DrawSegment(painter, rect, 16f, 16f, new Vector2(11.5f, 4.5f), new Vector2(4.5f, 11.5f), 2f);
                     break;
                 case UnitGitIconKind.CreateBranch:
                     DrawCreateBranch(painter, rect);
