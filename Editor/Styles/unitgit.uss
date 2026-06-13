@@ -1218,3 +1218,175 @@
     border-radius: 5px;
     padding-left: 8px;
 }
+
+.unitgit-release-row {
+    margin-top: 3px;
+    margin-bottom: 3px;
+    margin-left: 6px;
+    margin-right: 10px;
+    height: 34px;
+    min-height: 34px;
+    flex-direction: row;
+    align-items: center;
+    background-color: rgba(0, 218, 109, 0.05);
+    border-width: 1px;
+    border-color: #00da6d;
+    border-radius: 9px;
+    padding-left: 12px;
+    padding-right: 12px;
+}
+
+.unitgit-release-row:hover {
+    background-color: rgba(0, 218, 109, 0.12);
+}
+
+.unitgit-release-row:active {
+    background-color: rgba(0, 218, 109, 0.2);
+}
+
+.unitgit-release-row--selected {
+    background-color: rgba(0, 218, 109, 0.16);
+    border-color: #38ff9c;
+}
+
+.unitgit-release-name {
+    color: #eefff5;
+    -unity-font-style: bold;
+    white-space: nowrap;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.unitgit-release-pill {
+    margin-left: 10px;
+    color: #00da6d;
+    border-width: 1px;
+    border-color: #00da6d;
+    border-radius: 8px;
+    padding-left: 9px;
+    padding-right: 9px;
+    padding-top: 1px;
+    padding-bottom: 1px;
+    font-size: 10px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.unitgit-release-title {
+    margin-left: 12px;
+    color: #b9c7bf;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.unitgit-graph-ring {
+    position: absolute;
+    left: 11px;
+    top: 5px;
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+    min-height: 20px;
+    border-radius: 10px;
+    border-width: 2px;
+    border-color: #00da6d;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+.unitgit-graph-dot--release {
+    background-color: #00da6d;
+    border-color: #123524;
+}
+
+.unitgit-release-panel {
+    flex-grow: 1;
+}
+
+.unitgit-release-card {
+    margin: 8px;
+    padding: 10px;
+    background-color: #242424;
+    border-width: 1px;
+    border-color: #00da6d;
+    border-radius: 9px;
+}
+
+.unitgit-release-headline {
+    flex-direction: row;
+    align-items: center;
+}
+
+.unitgit-release-details-name {
+    color: #eefff5;
+    font-size: 14px;
+    -unity-font-style: bold;
+    white-space: nowrap;
+    overflow: hidden;
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.unitgit-release-scope {
+    margin-left: 8px;
+    color: #9ab5e7;
+    font-size: 10px;
+    border-width: 1px;
+    border-color: #4b4b4b;
+    border-radius: 8px;
+    padding-left: 8px;
+    padding-right: 8px;
+    padding-top: 1px;
+    padding-bottom: 1px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.unitgit-release-details-title {
+    margin-top: 4px;
+    color: #cfd8e8;
+    font-size: 12px;
+    white-space: normal;
+}
+
+.unitgit-release-meta-row {
+    flex-direction: row;
+    margin-top: 4px;
+}
+
+.unitgit-release-meta-key {
+    width: 110px;
+    min-width: 110px;
+    color: #8f9aa8;
+    font-size: 11px;
+}
+
+.unitgit-release-meta-value {
+    color: #eef4ff;
+    font-size: 11px;
+    white-space: normal;
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.unitgit-release-changelog-header {
+    margin-left: 10px;
+    margin-top: 6px;
+    color: #8f9aa8;
+    font-size: 11px;
+    -unity-font-style: bold;
+}
+
+.unitgit-release-changelog {
+    margin: 4px 10px 10px 10px;
+    padding: 8px;
+    background-color: #1d1d1d;
+    border-width: 1px;
+    border-color: #3a3a3a;
+    border-radius: 6px;
+    color: #cfd8e8;
+    font-size: 11px;
+    white-space: normal;
+}

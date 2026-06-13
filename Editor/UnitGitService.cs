@@ -72,6 +72,7 @@ namespace Orbiters.UnitGit.Editor
             snapshot.HasCommits = HasCommits();
             ParseStatus(status.StandardOutput, snapshot);
             snapshot.Branches = GetBranches();
+            snapshot.Releases = UnitGitReleases.Load(ProjectRoot);
             if (snapshot.HasCommits)
             {
                 snapshot.Commits = GetCommits(logSearch);
@@ -93,8 +94,21 @@ namespace Orbiters.UnitGit.Editor
                 "--no-ext-diff",
                 "--name-only",
                 "--date=format-local:%m/%d/%Y %I:%M %p",
-                "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ad%x1f%D%x1f%cn%x1f%ce%x1f%cd",
+                "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ad%x1f%D%x1f%cn%x1f%ce%x1f%cd%x1f%(trailers:key=" + UnitGitReleases.TrailerKey + ",valueonly,separator=%x2C)",
                 fullHash);
+
+            if (!result.Success)
+            {
+                // Older Git versions do not support the %(trailers) pretty-format placeholder.
+                result = RunGit(
+                    DefaultTimeoutMilliseconds,
+                    "show",
+                    "--no-ext-diff",
+                    "--name-only",
+                    "--date=format-local:%m/%d/%Y %I:%M %p",
+                    "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ad%x1f%D%x1f%cn%x1f%ce%x1f%cd",
+                    fullHash);
+            }
 
             if (!result.Success)
             {
@@ -125,7 +139,8 @@ namespace Orbiters.UnitGit.Editor
                     Subject = fields[2],
                     AuthorName = fields[3],
                     AuthorEmail = fields[4],
-                    Decorations = fields[6]
+                    Decorations = fields[6],
+                    ReleaseId = fields.Length >= 11 ? fields[10].Trim() : string.Empty
                 };
                 details.AuthorDate = fields[5];
                 details.CommitterName = fields[7];
@@ -205,6 +220,25 @@ namespace Orbiters.UnitGit.Editor
             }
 
             return RunGit(LongTimeoutMilliseconds, "commit", "-m", message.Trim());
+        }
+
+        public GitCommandResult Commit(string message, string trailingParagraph)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return new GitCommandResult
+                {
+                    ExitCode = 1,
+                    StandardError = "Commit message is required."
+                };
+            }
+
+            if (string.IsNullOrWhiteSpace(trailingParagraph))
+            {
+                return Commit(message);
+            }
+
+            return RunGit(LongTimeoutMilliseconds, "commit", "-m", message.Trim(), "-m", trailingParagraph.Trim());
         }
 
         public GitCommandResult ShelveAll(string message)
@@ -670,10 +704,17 @@ namespace Orbiters.UnitGit.Editor
                 "--all",
                 "--max-count=250",
                 "--date=relative",
-                "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%D"
+                "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%D%x1f%(trailers:key=" + UnitGitReleases.TrailerKey + ",valueonly,separator=%x2C)"
             };
 
             var result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+            if (!result.Success)
+            {
+                // Older Git versions do not support the %(trailers) pretty-format placeholder.
+                args[args.Count - 1] = "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%D";
+                result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+            }
+
             if (!result.Success)
             {
                 return new List<UnitGitCommit>();
@@ -743,7 +784,8 @@ namespace Orbiters.UnitGit.Editor
                     AuthorName = fields[3],
                     AuthorEmail = fields[4],
                     RelativeDate = fields[5],
-                    Decorations = fields[6]
+                    Decorations = fields[6],
+                    ReleaseId = fields.Length >= 8 ? fields[7].Trim() : string.Empty
                 };
 
                 if (MatchesSearch(commit, logSearch))

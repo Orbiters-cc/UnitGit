@@ -45,6 +45,7 @@ namespace Orbiters.UnitGit.Editor
         public List<UnitGitBranch> Branches = new List<UnitGitBranch>();
         public List<UnitGitStatusEntry> Changes = new List<UnitGitStatusEntry>();
         public List<UnitGitCommit> Commits = new List<UnitGitCommit>();
+        public UnitGitReleaseFile Releases = new UnitGitReleaseFile();
     }
 
     internal sealed class UnitGitBranch
@@ -132,6 +133,12 @@ namespace Orbiters.UnitGit.Editor
         public string AuthorEmail = string.Empty;
         public string RelativeDate = string.Empty;
         public string Decorations = string.Empty;
+        public string ReleaseId = string.Empty;
+
+        public bool HasRelease
+        {
+            get { return !string.IsNullOrWhiteSpace(ReleaseId); }
+        }
     }
 
     internal sealed class UnitGitCommitDetails
