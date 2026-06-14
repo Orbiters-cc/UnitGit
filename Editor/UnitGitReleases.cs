@@ -71,6 +71,9 @@ namespace Orbiters.UnitGit.Editor
     /// </summary>
     public static class UnitGitReleases
     {
+        public const int ApiVersion = 2;
+        public const string CommitFilesCapability = "commit-files";
+        public const string ScopedReleaseCheckpointCapability = "scoped-release-checkpoint";
         public const string ReleasesFileName = ".unitgit-releases.json";
         public const string TrailerKey = "UnitGit-Release";
 
@@ -136,12 +139,20 @@ namespace Orbiters.UnitGit.Editor
                 string.Equals((entry.id ?? string.Empty).Trim(), normalized, StringComparison.Ordinal));
         }
 
+        public static string[] GetCapabilities()
+        {
+            return new[]
+            {
+                CommitFilesCapability,
+                ScopedReleaseCheckpointCapability
+            };
+        }
+
         /// <summary>
-        /// Appends the release entry to the releases file, stages every pending change and creates
-        /// a commit whose message carries the release trailer. Call this after the external
-        /// publication (server upload, ...) succeeded so checkpoints always describe real releases.
+        /// Appends the release entry to the releases file and commits only the release file plus
+        /// the explicit project-relative paths supplied by the publisher.
         /// </summary>
-        public static UnitGitReleaseResult PublishRelease(UnitGitReleaseEntry entry, string commitTitle = null)
+        public static UnitGitReleaseResult PublishRelease(UnitGitReleaseEntry entry, string commitTitle, params string[] projectRelativePaths)
         {
             if (entry == null)
             {
@@ -179,7 +190,10 @@ namespace Orbiters.UnitGit.Editor
             string title = string.IsNullOrWhiteSpace(commitTitle)
                 ? BuildDefaultCommitTitle(entry)
                 : commitTitle.Trim();
-            UnitGitReleaseResult result = StageAllAndCommit(service, title, TrailerKey + ": " + entry.id);
+            UnitGitReleaseResult result = CommitFiles(
+                title,
+                TrailerKey + ": " + entry.id,
+                BuildReleaseCommitPaths(projectRelativePaths));
             result.ReleaseId = result.Success ? entry.id : result.ReleaseId;
             return result;
         }
@@ -217,7 +231,9 @@ namespace Orbiters.UnitGit.Editor
             }
 
             string[] paths = (projectRelativePaths ?? Array.Empty<string>())
+                .Select(NormalizeProjectPath)
                 .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             if (paths.Length == 0)
             {
@@ -273,6 +289,31 @@ namespace Orbiters.UnitGit.Editor
 
             RaiseChangedExternally();
             return result;
+        }
+
+        private static string[] BuildReleaseCommitPaths(IEnumerable<string> projectRelativePaths)
+        {
+            var paths = new List<string> { ReleasesFileName };
+            foreach (string path in projectRelativePaths ?? Enumerable.Empty<string>())
+            {
+                string normalized = NormalizeProjectPath(path);
+                if (string.IsNullOrWhiteSpace(normalized) ||
+                    paths.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                paths.Add(normalized);
+            }
+
+            return paths.ToArray();
+        }
+
+        private static string NormalizeProjectPath(string path)
+        {
+            return string.IsNullOrWhiteSpace(path)
+                ? string.Empty
+                : path.Trim().Replace('\\', '/');
         }
 
         private static UnitGitReleaseResult CheckPreconditions(UnitGitService service)

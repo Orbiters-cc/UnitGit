@@ -40,12 +40,11 @@ jobs:
       - name: Set Environment Variables
         run: |
           echo "zipFile=${{ vars.PACKAGE_NAME }}-${{ steps.version.outputs.value }}".zip >> $GITHUB_ENV
-          echo "unityPackage=${{ vars.PACKAGE_NAME }}-${{ steps.version.outputs.value }}.unitypackage" >> $GITHUB_ENV
           echo "version=${{ steps.version.outputs.value }}" >> $GITHUB_ENV
 
       - name: Build Package File List
         working-directory: "${{ env.packagePath }}"
-        run: python3 ci/build-package-file-list.py --output packageFiles --meta-output packageMetaFiles
+        run: python3 ci/build-package-file-list.py --output packageFiles
 
       - name: Create Package Zip
         working-directory: "${{ env.packagePath }}"
@@ -54,12 +53,6 @@ jobs:
       - name: Validate Package Zip Contents
         working-directory: "${{ env.packagePath }}"
         run: python3 ci/validate-package-archive.py "${{ github.workspace }}/${{ env.zipFile }}"
-
-      - name: Create UnityPackage
-        uses: pCYSl5EDgo/create-unitypackage@v1.2.3
-        with:
-          package-path: ${{ env.unityPackage }}
-          include-files: ${{ env.packagePath }}/packageMetaFiles
 
       - name: Create Tag
         id: tag_version
@@ -72,6 +65,5 @@ jobs:
         with:
           files: |
             ${{ env.zipFile }}
-            ${{ env.unityPackage }}
             ${{ env.packagePath }}/package.json
           tag_name: ${{ env.version }}
