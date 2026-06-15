@@ -79,6 +79,54 @@ namespace Orbiters.UnitGit.Editor.Tests
             }
         }
 
+        [Test]
+        public void PublishReleaseRollsBackReleaseFileWhenScopedCommitFails()
+        {
+            RequireGit();
+            string root = CreateTempUnityProjectFolder();
+            try
+            {
+                var service = new UnitGitService(root);
+                AssertGit(service.RunGit(30000, "init"));
+                AssertGit(service.RunGit(30000, "config", "user.email", "unitgit@example.test"));
+                AssertGit(service.RunGit(30000, "config", "user.name", "Unit Git Tests"));
+                AssertGit(service.RunGit(30000, "config", "core.autocrlf", "false"));
+
+                string assetPath = Path.Combine(root, "Assets", "file.txt");
+                File.WriteAllText(assetPath, "initial\n");
+                AssertGit(service.StageAll());
+                AssertGit(service.Commit("initial"));
+
+                var entry = new UnitGitReleaseEntry
+                {
+                    id = "release-rollback-test",
+                    tool = "MCB",
+                    type = "mcb-version",
+                    name = "Test Asset",
+                    version = "1.0.0"
+                };
+
+                UnitGitReleaseResult result = UnitGitReleases.PublishRelease(
+                    entry,
+                    "MCB : v1.0.0",
+                    service,
+                    "Assets/file.txt",
+                    "Assets/missing-file.txt");
+
+                Assert.That(result.Success, Is.False);
+                Assert.That(result.Message, Does.Contain("Staging files failed"));
+                Assert.That(File.Exists(UnitGitReleases.GetReleasesFilePath(root)), Is.False);
+
+                GitCommandResult releaseStatus = service.RunGit(30000, "status", "--porcelain=v1", "--", UnitGitReleases.ReleasesFileName);
+                AssertGit(releaseStatus);
+                Assert.That(releaseStatus.StandardOutput.Trim(), Is.Empty);
+            }
+            finally
+            {
+                DeleteTempFolder(root);
+            }
+        }
+
         private static void RequireGit()
         {
             var service = new UnitGitService(Path.GetTempPath());
@@ -95,6 +143,16 @@ namespace Orbiters.UnitGit.Editor.Tests
             return root;
         }
 
+        private static string CreateTempUnityProjectFolder()
+        {
+            string root = CreateTempFolder();
+            Directory.CreateDirectory(Path.Combine(root, "Assets"));
+            Directory.CreateDirectory(Path.Combine(root, "ProjectSettings"));
+            Directory.CreateDirectory(Path.Combine(root, "Packages"));
+            File.WriteAllText(Path.Combine(root, "Packages", "manifest.json"), "{}\n");
+            return root;
+        }
+
         private static void DeleteTempFolder(string root)
         {
             if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
@@ -102,6 +160,12 @@ namespace Orbiters.UnitGit.Editor.Tests
                 return;
             }
 
+            foreach (string path in Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories))
+            {
+                File.SetAttributes(path, FileAttributes.Normal);
+            }
+
+            File.SetAttributes(root, FileAttributes.Normal);
             Directory.Delete(root, true);
         }
 

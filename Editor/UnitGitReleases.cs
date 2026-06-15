@@ -71,6 +71,15 @@ namespace Orbiters.UnitGit.Editor
     /// </summary>
     public static class UnitGitReleases
     {
+        private sealed class ReleaseFileSnapshot
+        {
+            public bool FileExists;
+            public string FileContents = string.Empty;
+            public bool HasIndexEntry;
+            public string IndexMode = string.Empty;
+            public string IndexHash = string.Empty;
+        }
+
         public const int ApiVersion = 2;
         public const string CommitFilesCapability = "commit-files";
         public const string ScopedReleaseCheckpointCapability = "scoped-release-checkpoint";
@@ -154,12 +163,21 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public static UnitGitReleaseResult PublishRelease(UnitGitReleaseEntry entry, string commitTitle, params string[] projectRelativePaths)
         {
+            return PublishRelease(entry, commitTitle, new UnitGitService(), projectRelativePaths);
+        }
+
+        internal static UnitGitReleaseResult PublishRelease(UnitGitReleaseEntry entry, string commitTitle, UnitGitService service, params string[] projectRelativePaths)
+        {
             if (entry == null)
             {
                 return Fail("Release entry is required.");
             }
 
-            var service = new UnitGitService();
+            if (service == null)
+            {
+                return Fail("Unit Git service is required.");
+            }
+
             UnitGitReleaseResult precondition = CheckPreconditions(service);
             if (precondition != null)
             {
@@ -176,6 +194,7 @@ namespace Orbiters.UnitGit.Editor
                 entry.date = DateTime.UtcNow.ToString("o");
             }
 
+            ReleaseFileSnapshot snapshot = CaptureReleaseFileSnapshot(service);
             try
             {
                 UnitGitReleaseFile file = Load(service.ProjectRoot);
@@ -184,6 +203,7 @@ namespace Orbiters.UnitGit.Editor
             }
             catch (Exception ex)
             {
+                RestoreReleaseFileSnapshot(service, snapshot, out _);
                 return Fail("Could not write " + ReleasesFileName + ": " + ex.Message);
             }
 
@@ -191,9 +211,21 @@ namespace Orbiters.UnitGit.Editor
                 ? BuildDefaultCommitTitle(entry)
                 : commitTitle.Trim();
             UnitGitReleaseResult result = CommitFiles(
+                service,
                 title,
                 TrailerKey + ": " + entry.id,
                 BuildReleaseCommitPaths(projectRelativePaths));
+            if (!result.Success)
+            {
+                if (!RestoreReleaseFileSnapshot(service, snapshot, out string rollbackMessage) &&
+                    !string.IsNullOrWhiteSpace(rollbackMessage))
+                {
+                    result.Message = result.Message + "\nRollback failed: " + rollbackMessage;
+                }
+
+                return result;
+            }
+
             result.ReleaseId = result.Success ? entry.id : result.ReleaseId;
             return result;
         }
@@ -225,6 +257,11 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public static UnitGitReleaseResult CommitFiles(string commitTitle, string trailingParagraph, params string[] projectRelativePaths)
         {
+            return CommitFiles(new UnitGitService(), commitTitle, trailingParagraph, projectRelativePaths);
+        }
+
+        private static UnitGitReleaseResult CommitFiles(UnitGitService service, string commitTitle, string trailingParagraph, params string[] projectRelativePaths)
+        {
             if (string.IsNullOrWhiteSpace(commitTitle))
             {
                 return Fail("Commit title is required.");
@@ -240,7 +277,11 @@ namespace Orbiters.UnitGit.Editor
                 return Fail("At least one file path is required.");
             }
 
-            var service = new UnitGitService();
+            if (service == null)
+            {
+                return Fail("Unit Git service is required.");
+            }
+
             UnitGitReleaseResult precondition = CheckPreconditions(service);
             if (precondition != null)
             {
@@ -307,6 +348,77 @@ namespace Orbiters.UnitGit.Editor
             }
 
             return paths.ToArray();
+        }
+
+        private static ReleaseFileSnapshot CaptureReleaseFileSnapshot(UnitGitService service)
+        {
+            var snapshot = new ReleaseFileSnapshot();
+            string path = GetReleasesFilePath(service.ProjectRoot);
+            snapshot.FileExists = File.Exists(path);
+            if (snapshot.FileExists)
+            {
+                snapshot.FileContents = File.ReadAllText(path);
+            }
+
+            GitCommandResult indexEntry = service.RunGit(10000, "ls-files", "--stage", "--", ReleasesFileName);
+            if (indexEntry.Success && !string.IsNullOrWhiteSpace(indexEntry.StandardOutput))
+            {
+                string line = indexEntry.StandardOutput
+                    .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                    .FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(line))
+                {
+                    var fields = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (fields.Length >= 2)
+                    {
+                        snapshot.HasIndexEntry = true;
+                        snapshot.IndexMode = fields[0];
+                        snapshot.IndexHash = fields[1];
+                    }
+                }
+            }
+
+            return snapshot;
+        }
+
+        private static bool RestoreReleaseFileSnapshot(UnitGitService service, ReleaseFileSnapshot snapshot, out string message)
+        {
+            message = string.Empty;
+            if (service == null || snapshot == null)
+            {
+                message = "Missing rollback context.";
+                return false;
+            }
+
+            try
+            {
+                string path = GetReleasesFilePath(service.ProjectRoot);
+                if (snapshot.FileExists)
+                {
+                    File.WriteAllText(path, snapshot.FileContents ?? string.Empty);
+                }
+                else if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+
+                GitCommandResult indexResult = snapshot.HasIndexEntry
+                    ? service.RunGit(10000, "update-index", "--cacheinfo", snapshot.IndexMode, snapshot.IndexHash, ReleasesFileName)
+                    : service.RunGit(10000, "rm", "--cached", "--ignore-unmatch", "--", ReleasesFileName);
+
+                if (!indexResult.Success)
+                {
+                    message = indexResult.Message;
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                return false;
+            }
         }
 
         private static string NormalizeProjectPath(string path)
