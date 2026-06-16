@@ -161,19 +161,47 @@ namespace Orbiters.UnitGit.Editor
 
         private void SelectCommitFromRow(UnitGitCommit commit, bool selectRelease)
         {
+            if (commit == null)
+            {
+                return;
+            }
+
             selectedCommit = commit;
-            selectedDetails = gitService.GetCommitDetails(commit.FullHash);
-            selectedReleaseId = selectRelease ? commit.ReleaseId : string.Empty;
+            selectedDetails = gitService != null ? gitService.GetCommitDetails(commit.FullHash) : null;
+            selectedReleaseId = selectRelease && !string.IsNullOrWhiteSpace(commit.ReleaseId)
+                ? commit.ReleaseId
+                : string.Empty;
             RebuildContent();
         }
 
-        // Selection listens to pointer-down (instead of the button's click-on-release) so the
-        // list feels snappier.
+        private static VisualElement BuildSelectableRow(Action select)
+        {
+            var row = new VisualElement
+            {
+                focusable = true,
+                pickingMode = PickingMode.Position
+            };
+
+            RegisterRowSelection(row, select);
+            return row;
+        }
+
+        // Selection listens to mouse-down so row feedback happens before any expensive details work.
         private static void RegisterRowSelection(VisualElement row, Action select)
         {
-            row.RegisterCallback<PointerDownEvent>(evt =>
+            row.RegisterCallback<MouseDownEvent>(evt =>
             {
                 if (evt.button == 0)
+                {
+                    evt.StopPropagation();
+                    row.Focus();
+                    select();
+                }
+            });
+
+            row.RegisterCallback<KeyDownEvent>(evt =>
+            {
+                if (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.Space)
                 {
                     evt.StopPropagation();
                     select();
@@ -183,10 +211,11 @@ namespace Orbiters.UnitGit.Editor
 
         private VisualElement BuildCommitRow(UnitGitCommit commit, int index, int totalCommits, bool isReleaseCommit)
         {
-            var row = new Button();
-            RegisterRowSelection(row, () => SelectCommitFromRow(commit, false));
+            VisualElement row = BuildSelectableRow(() => SelectCommitFromRow(commit, false));
             row.AddToClassList("unitgit-log-row");
-            bool isSelected = selectedCommit != null && selectedCommit.FullHash == commit.FullHash;
+            bool isSelected = selectedCommit != null &&
+                              selectedCommit.FullHash == commit.FullHash &&
+                              string.IsNullOrEmpty(selectedReleaseId);
             if (isSelected)
             {
                 row.AddToClassList("unitgit-log-row--selected");

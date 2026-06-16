@@ -185,15 +185,14 @@ namespace Orbiters.UnitGit.Editor
 
         private VisualElement BuildReleaseCheckpointRow(UnitGitCommit commit, UnitGitReleaseEntry release)
         {
-            var row = new Button();
-            RegisterRowSelection(row, () => SelectCommitFromRow(commit, true));
+            VisualElement row = BuildSelectableRow(() => SelectCommitFromRow(commit, true));
             row.AddToClassList("unitgit-release-row");
 
             // The checkpoint follows the color of the branch its commit belongs to.
             Color branchColor = GetGraphColor(commit);
             bool isSelected = selectedCommit != null &&
                               selectedCommit.FullHash == commit.FullHash &&
-                              !string.IsNullOrEmpty(selectedReleaseId);
+                              string.Equals(selectedReleaseId, commit.ReleaseId, StringComparison.Ordinal);
             if (isSelected)
             {
                 row.AddToClassList("unitgit-release-row--selected");
