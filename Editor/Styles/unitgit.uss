@@ -1181,6 +1181,39 @@
     margin-bottom: 14px;
 }
 
+.unitgit-settings-root {
+    flex-grow: 1;
+    min-height: 0;
+    padding: 16px;
+    background-color: #303030;
+}
+
+.unitgit-settings-panel {
+    width: 560px;
+    max-width: 560px;
+    background-color: #383838;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #282d35;
+    padding: 14px;
+}
+
+.unitgit-settings-toggle {
+    margin-top: 12px;
+    margin-bottom: 2px;
+}
+
+.unitgit-settings-toggle Label {
+    color: #eef4ff;
+}
+
+.unitgit-settings-detail {
+    color: #9fa8b8;
+    font-size: 11px;
+    white-space: normal;
+    margin-top: 4px;
+}
+
 .unitgit-message-actions {
     flex-direction: row;
     align-items: center;

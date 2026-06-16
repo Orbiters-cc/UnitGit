@@ -45,6 +45,7 @@ namespace Orbiters.UnitGit.Editor
             topBar.Add(BuildTabButton(UnitGitTab.Shelf, "Shelf"));
             topBar.Add(BuildTabButton(UnitGitTab.Log, GetLogTabTitle()));
             topBar.Add(BuildTabButton(UnitGitTab.Console, "Console"));
+            topBar.Add(BuildTabButton(UnitGitTab.Settings, "Settings"));
 
             var spacer = new VisualElement();
             spacer.AddToClassList("unitgit-spacer");
@@ -170,6 +171,9 @@ namespace Orbiters.UnitGit.Editor
                     break;
                 case UnitGitTab.Console:
                     contentRoot.Add(BuildConsoleBody());
+                    break;
+                case UnitGitTab.Settings:
+                    contentRoot.Add(BuildSettingsBody());
                     break;
                 default:
                     contentRoot.Add(BuildLogBody());

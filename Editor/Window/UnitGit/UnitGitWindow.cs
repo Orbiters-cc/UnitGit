@@ -142,7 +142,8 @@ namespace Orbiters.UnitGit.Editor
             LocalChanges,
             Shelf,
             Log,
-            Console
+            Console,
+            Settings
         }
     }
 }

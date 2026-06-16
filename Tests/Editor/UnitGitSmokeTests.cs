@@ -127,6 +127,63 @@ namespace Orbiters.UnitGit.Editor.Tests
             }
         }
 
+        [Test]
+        public void PublishReleaseAllStagesProjectChangesAndReleaseTrailer()
+        {
+            RequireGit();
+            string root = CreateTempUnityProjectFolder();
+            try
+            {
+                var service = new UnitGitService(root);
+                AssertGit(service.RunGit(30000, "init"));
+                AssertGit(service.RunGit(30000, "config", "user.email", "unitgit@example.test"));
+                AssertGit(service.RunGit(30000, "config", "user.name", "Unit Git Tests"));
+                AssertGit(service.RunGit(30000, "config", "core.autocrlf", "false"));
+
+                string assetPath = Path.Combine(root, "Assets", "avatar.txt");
+                string settingsPath = Path.Combine(root, "ProjectSettings", "AvatarUpload.asset");
+                File.WriteAllText(assetPath, "initial\n");
+                File.WriteAllText(settingsPath, "initial\n");
+                AssertGit(service.StageAll());
+                AssertGit(service.Commit("initial"));
+
+                File.WriteAllText(assetPath, "uploaded avatar\n");
+                File.WriteAllText(settingsPath, "uploaded settings\n");
+
+                var entry = new UnitGitReleaseEntry
+                {
+                    id = "avatar-upload-test",
+                    tool = "VRChat SDK",
+                    type = "avatar upload",
+                    name = "Test Avatar",
+                    scope = "PC"
+                };
+
+                UnitGitReleaseResult result = UnitGitReleases.PublishReleaseAll(
+                    entry,
+                    "vrchat avatar upload: Test Avatar",
+                    service,
+                    false);
+
+                Assert.That(result.Success, Is.True, result.Message);
+                Assert.That(result.ReleaseId, Is.EqualTo("avatar-upload-test"));
+
+                UnitGitCommitDetails details = service.GetCommitDetails(result.CommitHash);
+                Assert.That(details.Commit.ReleaseId, Is.EqualTo("avatar-upload-test"));
+                Assert.That(details.ChangedFiles, Does.Contain("Assets/avatar.txt"));
+                Assert.That(details.ChangedFiles, Does.Contain("ProjectSettings/AvatarUpload.asset"));
+                Assert.That(details.ChangedFiles, Does.Contain(UnitGitReleases.ReleasesFileName));
+
+                UnitGitReleaseEntry saved = UnitGitReleases.FindById(UnitGitReleases.Load(root), "avatar-upload-test");
+                Assert.That(saved, Is.Not.Null);
+                Assert.That(saved.type, Is.EqualTo("avatar upload"));
+            }
+            finally
+            {
+                DeleteTempFolder(root);
+            }
+        }
+
         private static void RequireGit()
         {
             var service = new UnitGitService(Path.GetTempPath());

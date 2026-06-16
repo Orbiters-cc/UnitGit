@@ -83,6 +83,7 @@ namespace Orbiters.UnitGit.Editor
         public const int ApiVersion = 2;
         public const string CommitFilesCapability = "commit-files";
         public const string ScopedReleaseCheckpointCapability = "scoped-release-checkpoint";
+        public const string FullProjectReleaseCheckpointCapability = "full-project-release-checkpoint";
         public const string ReleasesFileName = ".unitgit-releases.json";
         public const string TrailerKey = "UnitGit-Release";
 
@@ -153,7 +154,8 @@ namespace Orbiters.UnitGit.Editor
             return new[]
             {
                 CommitFilesCapability,
-                ScopedReleaseCheckpointCapability
+                ScopedReleaseCheckpointCapability,
+                FullProjectReleaseCheckpointCapability
             };
         }
 
@@ -231,6 +233,79 @@ namespace Orbiters.UnitGit.Editor
         }
 
         /// <summary>
+        /// Appends the release entry and commits every pending project change. Used by upload
+        /// workflows where the built content can touch scenes, assets, settings, and package files.
+        /// </summary>
+        public static UnitGitReleaseResult PublishReleaseAll(UnitGitReleaseEntry entry, string commitTitle)
+        {
+            return PublishReleaseAll(entry, commitTitle, new UnitGitService(), true);
+        }
+
+        internal static UnitGitReleaseResult PublishReleaseAll(UnitGitReleaseEntry entry, string commitTitle, UnitGitService service, bool notifyChangedExternally)
+        {
+            if (entry == null)
+            {
+                return Fail("Release entry is required.");
+            }
+
+            if (service == null)
+            {
+                return Fail("Unit Git service is required.");
+            }
+
+            UnitGitReleaseResult precondition = CheckPreconditions(service);
+            if (precondition != null)
+            {
+                return precondition;
+            }
+
+            if (string.IsNullOrWhiteSpace(entry.id))
+            {
+                entry.id = GenerateReleaseId(entry);
+            }
+
+            if (string.IsNullOrWhiteSpace(entry.date))
+            {
+                entry.date = DateTime.UtcNow.ToString("o");
+            }
+
+            ReleaseFileSnapshot snapshot = CaptureReleaseFileSnapshot(service);
+            try
+            {
+                UnitGitReleaseFile file = Load(service.ProjectRoot);
+                file.releases.Add(entry);
+                File.WriteAllText(GetReleasesFilePath(service.ProjectRoot), JsonUtility.ToJson(file, true));
+            }
+            catch (Exception ex)
+            {
+                RestoreReleaseFileSnapshot(service, snapshot, out _);
+                return Fail("Could not write " + ReleasesFileName + ": " + ex.Message);
+            }
+
+            string title = string.IsNullOrWhiteSpace(commitTitle)
+                ? BuildDefaultCommitTitle(entry)
+                : commitTitle.Trim();
+            UnitGitReleaseResult result = StageAllAndCommit(
+                service,
+                title,
+                TrailerKey + ": " + entry.id,
+                notifyChangedExternally);
+            if (!result.Success)
+            {
+                if (!RestoreReleaseFileSnapshot(service, snapshot, out string rollbackMessage) &&
+                    !string.IsNullOrWhiteSpace(rollbackMessage))
+                {
+                    result.Message = result.Message + "\nRollback failed: " + rollbackMessage;
+                }
+
+                return result;
+            }
+
+            result.ReleaseId = entry.id;
+            return result;
+        }
+
+        /// <summary>
         /// Stages every pending change and commits it. Used by external tools (and connector
         /// tests) that want a plain commit without recording a release entry.
         /// </summary>
@@ -242,13 +317,28 @@ namespace Orbiters.UnitGit.Editor
             }
 
             var service = new UnitGitService();
+            return CommitAll(commitTitle, trailingParagraph, service, true);
+        }
+
+        internal static UnitGitReleaseResult CommitAll(string commitTitle, string trailingParagraph, UnitGitService service, bool notifyChangedExternally)
+        {
+            if (string.IsNullOrWhiteSpace(commitTitle))
+            {
+                return Fail("Commit title is required.");
+            }
+
+            if (service == null)
+            {
+                return Fail("Unit Git service is required.");
+            }
+
             UnitGitReleaseResult precondition = CheckPreconditions(service);
             if (precondition != null)
             {
                 return precondition;
             }
 
-            return StageAllAndCommit(service, commitTitle.Trim(), trailingParagraph);
+            return StageAllAndCommit(service, commitTitle.Trim(), trailingParagraph, notifyChangedExternally);
         }
 
         /// <summary>
@@ -330,6 +420,11 @@ namespace Orbiters.UnitGit.Editor
 
             RaiseChangedExternally();
             return result;
+        }
+
+        internal static void NotifyChangedExternally()
+        {
+            RaiseChangedExternally();
         }
 
         private static string[] BuildReleaseCommitPaths(IEnumerable<string> projectRelativePaths)
@@ -448,7 +543,7 @@ namespace Orbiters.UnitGit.Editor
             return null;
         }
 
-        private static UnitGitReleaseResult StageAllAndCommit(UnitGitService service, string title, string trailingParagraph)
+        private static UnitGitReleaseResult StageAllAndCommit(UnitGitService service, string title, string trailingParagraph, bool notifyChangedExternally = true)
         {
             GitCommandResult stage = RunWithIndexLockRetry(() => service.StageAll());
             if (!stage.Success && IsIndexLockFailure(stage) && TryRemoveStaleIndexLock(service.ProjectRoot))
@@ -479,7 +574,11 @@ namespace Orbiters.UnitGit.Editor
                 result.CommitHash = head.StandardOutput.Trim();
             }
 
-            RaiseChangedExternally();
+            if (notifyChangedExternally)
+            {
+                RaiseChangedExternally();
+            }
+
             return result;
         }
 
