@@ -3,7 +3,7 @@ import argparse
 from pathlib import Path
 
 
-PACKAGE_ROOTS = ("Editor", "Runtime")
+PACKAGE_ROOTS = ("Editor", "Runtime", "Tests")
 ROOT_FILES = ("LICENSE.md", "README.md", "package.json")
 
 

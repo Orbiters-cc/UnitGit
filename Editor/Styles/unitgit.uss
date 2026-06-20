@@ -804,6 +804,16 @@
     border-top-color: #303030;
 }
 
+.unitgit-local-amend-toggle {
+    width: 76px;
+    min-width: 76px;
+    margin-right: 8px;
+}
+
+.unitgit-local-amend-toggle Label {
+    color: #eef4ff;
+}
+
 .unitgit-local-commit-message {
     flex-grow: 1;
     height: 30px;
@@ -1384,6 +1394,25 @@
     white-space: normal;
 }
 
+.unitgit-release-thumbnail-frame {
+    height: 150px;
+    min-height: 150px;
+    margin-top: 8px;
+    margin-bottom: 6px;
+    background-color: #181818;
+    border-width: 1px;
+    border-color: #343434;
+    border-radius: 6px;
+    overflow: hidden;
+    align-items: center;
+    justify-content: center;
+}
+
+.unitgit-release-thumbnail {
+    width: 100%;
+    height: 100%;
+}
+
 .unitgit-release-meta-row {
     flex-direction: row;
     margin-top: 4px;
@@ -1422,4 +1451,50 @@
     color: #cfd8e8;
     font-size: 11px;
     white-space: normal;
+}
+
+.unitgit-commit-message-prompt {
+    flex-grow: 1;
+    background-color: #303030;
+    padding: 14px;
+}
+
+.unitgit-commit-message-title {
+    color: #ffffff;
+    -unity-font-style: bold;
+    font-size: 14px;
+    margin-bottom: 8px;
+}
+
+.unitgit-commit-message-summary {
+    color: #9fa8b8;
+    white-space: normal;
+    margin-bottom: 10px;
+}
+
+.unitgit-commit-message-field {
+    flex-grow: 1;
+    min-height: 210px;
+    margin-bottom: 12px;
+}
+
+.unitgit-commit-message-field .unity-base-field__input,
+.unitgit-commit-message-field .unity-base-text-field__input,
+.unitgit-commit-message-field .unity-text-field__input,
+.unitgit-commit-message-field .unity-text-input {
+    background-color: #242424;
+    color: #eef4ff;
+    border-width: 1px;
+    border-color: #4b4b4b;
+    border-radius: 5px;
+    padding-left: 8px;
+    padding-right: 8px;
+}
+
+.unitgit-commit-message-actions {
+    height: 34px;
+    min-height: 34px;
+    flex-direction: row;
+    justify-content: flex-end;
+    align-items: center;
 }

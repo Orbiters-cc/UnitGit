@@ -45,6 +45,7 @@ namespace Orbiters.UnitGit.Editor
         public string scope = string.Empty;      // e.g. "PUBLIC", "BETA"
         public string date = string.Empty;       // ISO-8601 (UTC)
         public string author = string.Empty;
+        public string thumbnailPath = string.Empty;
         public List<UnitGitReleaseField> fields = new List<UnitGitReleaseField>();
     }
 
@@ -53,6 +54,7 @@ namespace Orbiters.UnitGit.Editor
     {
         public int formatVersion = 1;
         public List<UnitGitReleaseEntry> releases = new List<UnitGitReleaseEntry>();
+        public List<string> hiddenReleaseIds = new List<string>();
     }
 
     public sealed class UnitGitReleaseResult
@@ -127,6 +129,7 @@ namespace Orbiters.UnitGit.Editor
                 }
 
                 parsed.releases = parsed.releases ?? new List<UnitGitReleaseEntry>();
+                parsed.hiddenReleaseIds = parsed.hiddenReleaseIds ?? new List<string>();
                 return parsed;
             }
             catch (Exception ex)
@@ -147,6 +150,56 @@ namespace Orbiters.UnitGit.Editor
             return file.releases.FirstOrDefault(entry =>
                 entry != null &&
                 string.Equals((entry.id ?? string.Empty).Trim(), normalized, StringComparison.Ordinal));
+        }
+
+        internal static bool IsHidden(UnitGitReleaseFile file, string id)
+        {
+            if (file == null || file.hiddenReleaseIds == null || string.IsNullOrWhiteSpace(id))
+            {
+                return false;
+            }
+
+            string normalized = id.Trim();
+            return file.hiddenReleaseIds.Any(hiddenId =>
+                string.Equals((hiddenId ?? string.Empty).Trim(), normalized, StringComparison.Ordinal));
+        }
+
+        internal static UnitGitReleaseResult HideRelease(string projectRoot, string id)
+        {
+            if (string.IsNullOrWhiteSpace(projectRoot))
+            {
+                return Fail("Project root is required.");
+            }
+
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                return Fail("Release id is required.");
+            }
+
+            try
+            {
+                UnitGitReleaseFile file = Load(projectRoot);
+                file.hiddenReleaseIds = file.hiddenReleaseIds ?? new List<string>();
+                string normalized = id.Trim();
+                if (!file.hiddenReleaseIds.Any(hiddenId =>
+                        string.Equals((hiddenId ?? string.Empty).Trim(), normalized, StringComparison.Ordinal)))
+                {
+                    file.hiddenReleaseIds.Add(normalized);
+                }
+
+                File.WriteAllText(GetReleasesFilePath(projectRoot), JsonUtility.ToJson(file, true));
+                RaiseChangedExternally();
+                return new UnitGitReleaseResult
+                {
+                    Success = true,
+                    Message = "Release row hidden.",
+                    ReleaseId = normalized
+                };
+            }
+            catch (Exception ex)
+            {
+                return Fail("Could not hide release row: " + ex.Message);
+            }
         }
 
         public static string[] GetCapabilities()

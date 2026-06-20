@@ -50,7 +50,7 @@ jobs:
         working-directory: "${{ env.packagePath }}"
         run: zip -q "${{ github.workspace }}/${{ env.zipFile }}" -@ < packageFiles
 
-      - name: Validate Package Zip Contents
+      - name: Validate Package Zip Import Contract
         working-directory: "${{ env.packagePath }}"
         run: python3 ci/validate-package-archive.py "${{ github.workspace }}/${{ env.zipFile }}"
 

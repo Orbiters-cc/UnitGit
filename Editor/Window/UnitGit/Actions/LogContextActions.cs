@@ -1,0 +1,280 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using UnityEditor;
+using UnityEngine;
+
+namespace Orbiters.UnitGit.Editor
+{
+    internal sealed partial class UnitGitWindow
+    {
+        private const string HistoryRewriteWarning = "This rewrites local Git history. Unit Git will not push; force-push manually if you want the remote branch to match.";
+
+        private void ShowCommitContextMenu(UnitGitCommit commit)
+        {
+            var menu = new GenericMenu();
+            if (commit == null)
+            {
+                menu.AddDisabledItem(new GUIContent("No Commit"));
+                menu.ShowAsContext();
+                return;
+            }
+
+            List<UnitGitCommit> selectedCommits = GetSelectedCommitsInLogOrder();
+            menu.AddItem(new GUIContent("Rename Commit"), false, () => PromptRenameCommit(commit));
+            if (selectedCommits.Count >= 2)
+            {
+                menu.AddItem(new GUIContent("Squash Selected Commits"), false, PromptSquashSelectedCommits);
+            }
+            else
+            {
+                menu.AddDisabledItem(new GUIContent("Squash Selected Commits"));
+            }
+
+            menu.AddSeparator(string.Empty);
+            menu.AddItem(new GUIContent("Copy Hash"), false, () => CopyText("copy hash", commit.FullHash));
+            menu.AddItem(new GUIContent("Copy Short Hash"), false, () => CopyText("copy short hash", commit.ShortHash));
+            menu.ShowAsContext();
+        }
+
+        private void ShowReleaseContextMenu(UnitGitCommit commit, UnitGitReleaseEntry release)
+        {
+            var menu = new GenericMenu();
+            string releaseId = GetReleaseId(commit, release);
+            if (!string.IsNullOrWhiteSpace(releaseId))
+            {
+                menu.AddItem(new GUIContent("Hide Release Row"), false, () => HideReleaseRow(commit, release));
+            }
+            else
+            {
+                menu.AddDisabledItem(new GUIContent("Hide Release Row"));
+            }
+
+            if (commit != null)
+            {
+                menu.AddSeparator(string.Empty);
+                menu.AddItem(new GUIContent("Rename Commit"), false, () => PromptRenameCommit(commit));
+                menu.AddItem(new GUIContent("Copy Hash"), false, () => CopyText("copy hash", commit.FullHash));
+            }
+            else
+            {
+                menu.AddDisabledItem(new GUIContent("Rename Commit"));
+                menu.AddDisabledItem(new GUIContent("Copy Hash"));
+            }
+
+            if (!string.IsNullOrWhiteSpace(releaseId))
+            {
+                menu.AddItem(new GUIContent("Copy Release ID"), false, () => CopyText("copy release id", releaseId));
+            }
+
+            menu.ShowAsContext();
+        }
+
+        private void PromptRenameCommit(UnitGitCommit commit)
+        {
+            if (commit == null || gitService == null)
+            {
+                return;
+            }
+
+            GitCommandResult messageResult = gitService.GetCommitMessage(commit.FullHash);
+            if (!messageResult.Success)
+            {
+                EditorUtility.DisplayDialog("Rename Commit", messageResult.Message, "OK");
+                return;
+            }
+
+            UnitGitCommitMessagePromptWindow.Open(
+                "Rename Commit",
+                commit.ShortHash + "  " + commit.AuthorName,
+                messageResult.StandardOutput,
+                "Rename",
+                newMessage =>
+                {
+                    if (string.IsNullOrWhiteSpace(newMessage))
+                    {
+                        EditorUtility.DisplayDialog("Rename Commit", "Commit message is required.", "OK");
+                        return;
+                    }
+
+                    if (!ConfirmGitOperation(
+                            "Rename Commit",
+                            "Rewrite",
+                            "rewrite commit " + commit.ShortHash + "\nupdate HEAD",
+                            "Rename commit " + commit.ShortHash + ".",
+                            HistoryRewriteWarning,
+                            GetChangedFileCountForCommits(new[] { commit })))
+                    {
+                        return;
+                    }
+
+                    string hash = commit.FullHash;
+                    string message = newMessage;
+                    RunAction("rename commit " + commit.ShortHash, () => gitService.RenameCommit(hash, message));
+                });
+        }
+
+        private void PromptSquashSelectedCommits()
+        {
+            if (gitService == null)
+            {
+                return;
+            }
+
+            List<UnitGitCommit> commits = GetSelectedCommitsInLogOrder();
+            if (commits.Count < 2)
+            {
+                EditorUtility.DisplayDialog("Squash Commits", "Select at least two commits to squash.", "OK");
+                return;
+            }
+
+            string defaultMessage = BuildDefaultSquashMessage(commits);
+            UnitGitCommitMessagePromptWindow.Open(
+                "Squash Commits",
+                commits.Count + " selected commits",
+                defaultMessage,
+                "Squash",
+                newMessage =>
+                {
+                    if (string.IsNullOrWhiteSpace(newMessage))
+                    {
+                        EditorUtility.DisplayDialog("Squash Commits", "Commit message is required.", "OK");
+                        return;
+                    }
+
+                    if (!ConfirmGitOperation(
+                            "Squash Commits",
+                            "Rewrite",
+                            "rewrite selected commits\nupdate HEAD",
+                            "Squash " + commits.Count + " selected commits into one commit.",
+                            HistoryRewriteWarning,
+                            GetChangedFileCountForCommits(commits)))
+                    {
+                        return;
+                    }
+
+                    string[] hashes = commits.Select(commit => commit.FullHash).ToArray();
+                    string message = newMessage;
+                    RunAction("squash " + commits.Count + " commits", () => gitService.SquashCommits(hashes, message));
+                });
+        }
+
+        private void HideReleaseRow(UnitGitCommit commit, UnitGitReleaseEntry release)
+        {
+            if (gitService == null)
+            {
+                return;
+            }
+
+            string releaseId = GetReleaseId(commit, release);
+            if (string.IsNullOrWhiteSpace(releaseId))
+            {
+                return;
+            }
+
+            if (!ConfirmGitOperation(
+                    "Hide Release Row",
+                    "Hide",
+                    "update " + UnitGitReleases.ReleasesFileName,
+                    "Hide release row " + releaseId + ".",
+                    "This updates Unit Git release metadata only. It does not rewrite Git history.",
+                    1))
+            {
+                return;
+            }
+
+            string projectRoot = gitService.ProjectRoot;
+            RunAction("hide release " + releaseId, () => ConvertReleaseResult(UnitGitReleases.HideRelease(projectRoot, releaseId)));
+        }
+
+        private static GitCommandResult ConvertReleaseResult(UnitGitReleaseResult result)
+        {
+            if (result == null)
+            {
+                return new GitCommandResult
+                {
+                    ExitCode = 1,
+                    StandardError = "Release operation failed."
+                };
+            }
+
+            return new GitCommandResult
+            {
+                ExitCode = result.Success ? 0 : 1,
+                StandardOutput = result.Success ? result.Message : string.Empty,
+                StandardError = result.Success ? string.Empty : result.Message
+            };
+        }
+
+        private string BuildDefaultSquashMessage(IList<UnitGitCommit> commits)
+        {
+            var builder = new StringBuilder();
+            builder.AppendLine("squash " + commits.Count + " commits");
+            builder.AppendLine();
+            builder.AppendLine("Squashed commits:");
+            foreach (UnitGitCommit commit in commits.AsEnumerable().Reverse())
+            {
+                builder.AppendLine("- " + commit.ShortHash + " " + commit.Subject);
+            }
+
+            return builder.ToString().TrimEnd();
+        }
+
+        private int GetChangedFileCountForCommits(IEnumerable<UnitGitCommit> commits)
+        {
+            var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (gitService == null)
+            {
+                return 0;
+            }
+
+            foreach (UnitGitCommit commit in commits)
+            {
+                if (commit == null || string.IsNullOrWhiteSpace(commit.FullHash))
+                {
+                    continue;
+                }
+
+                UnitGitCommitDetails details = gitService.GetCommitDetails(commit.FullHash);
+                if (details == null || details.ChangedFiles == null)
+                {
+                    continue;
+                }
+
+                foreach (string file in details.ChangedFiles)
+                {
+                    if (!string.IsNullOrWhiteSpace(file))
+                    {
+                        files.Add(file.Trim());
+                    }
+                }
+            }
+
+            return files.Count;
+        }
+
+        private void CopyText(string label, string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return;
+            }
+
+            EditorGUIUtility.systemCopyBuffer = text;
+            AppendConsole(label, "copied");
+        }
+
+        private static string GetReleaseId(UnitGitCommit commit, UnitGitReleaseEntry release)
+        {
+            if (release != null && !string.IsNullOrWhiteSpace(release.id))
+            {
+                return release.id.Trim();
+            }
+
+            return commit != null && !string.IsNullOrWhiteSpace(commit.ReleaseId)
+                ? commit.ReleaseId.Trim()
+                : string.Empty;
+        }
+    }
+}

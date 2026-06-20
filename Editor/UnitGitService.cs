@@ -20,6 +20,17 @@ namespace Orbiters.UnitGit.Editor
         private static readonly Regex AheadRegex = new Regex(@"ahead\s+(\d+)", RegexOptions.Compiled);
         private static readonly Regex BehindRegex = new Regex(@"behind\s+(\d+)", RegexOptions.Compiled);
 
+        private sealed class CommitRewriteInfo
+        {
+            public string Hash = string.Empty;
+            public string TreeHash = string.Empty;
+            public List<string> Parents = new List<string>();
+            public string AuthorName = string.Empty;
+            public string AuthorEmail = string.Empty;
+            public string AuthorDate = string.Empty;
+            public string Message = string.Empty;
+        }
+
         public UnitGitService()
             : this(GetUnityProjectRoot())
         {
@@ -65,6 +76,7 @@ namespace Orbiters.UnitGit.Editor
             var status = RunGit(DefaultTimeoutMilliseconds, "status", "--porcelain=v1", "-b", "-uall");
             if (!status.Success)
             {
+                snapshot.HasCommits = HasCommits();
                 snapshot.LastError = status.Message;
                 return snapshot;
             }
@@ -212,25 +224,17 @@ namespace Orbiters.UnitGit.Editor
         {
             if (string.IsNullOrWhiteSpace(message))
             {
-                return new GitCommandResult
-                {
-                    ExitCode = 1,
-                    StandardError = "Commit message is required."
-                };
+                return Failure("Commit message is required.");
             }
 
-            return RunGit(LongTimeoutMilliseconds, "commit", "-m", message.Trim());
+            return RunCommitWithMessageFile(new[] { "commit" }, message);
         }
 
         public GitCommandResult Commit(string message, string trailingParagraph)
         {
             if (string.IsNullOrWhiteSpace(message))
             {
-                return new GitCommandResult
-                {
-                    ExitCode = 1,
-                    StandardError = "Commit message is required."
-                };
+                return Failure("Commit message is required.");
             }
 
             if (string.IsNullOrWhiteSpace(trailingParagraph))
@@ -238,7 +242,68 @@ namespace Orbiters.UnitGit.Editor
                 return Commit(message);
             }
 
-            return RunGit(LongTimeoutMilliseconds, "commit", "-m", message.Trim(), "-m", trailingParagraph.Trim());
+            return RunCommitWithMessageFile(new[] { "commit" }, message.Trim() + "\n\n" + trailingParagraph.Trim());
+        }
+
+        public GitCommandResult CommitAmend(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return Failure("Commit message is required.");
+            }
+
+            return RunCommitWithMessageFile(new[] { "commit", "--amend" }, message);
+        }
+
+        public GitCommandResult GetHeadCommitMessage()
+        {
+            return GetCommitMessage("HEAD");
+        }
+
+        public GitCommandResult GetCommitMessage(string commitHash)
+        {
+            if (string.IsNullOrWhiteSpace(commitHash))
+            {
+                return Failure("Commit hash is required.");
+            }
+
+            var result = RunGit(DefaultTimeoutMilliseconds, "log", "-1", "--format=%B", commitHash);
+            if (result.Success)
+            {
+                result.StandardOutput = TrimTrailingNewlines(result.StandardOutput);
+            }
+
+            return result;
+        }
+
+        internal GitCommandResult RenameCommit(string commitHash, string message)
+        {
+            if (string.IsNullOrWhiteSpace(commitHash))
+            {
+                return Failure("Commit hash is required.");
+            }
+
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return Failure("Commit message is required.");
+            }
+
+            return RewriteHeadHistory(new[] { commitHash.Trim() }, message, false);
+        }
+
+        internal GitCommandResult SquashCommits(IList<string> commitHashes, string message)
+        {
+            if (commitHashes == null || commitHashes.Count < 2)
+            {
+                return Failure("Select at least two commits to squash.");
+            }
+
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return Failure("Commit message is required.");
+            }
+
+            return RewriteHeadHistory(commitHashes, message, true);
         }
 
         public GitCommandResult ShelveAll(string message)
@@ -248,6 +313,245 @@ namespace Orbiters.UnitGit.Editor
                 : message.Trim();
 
             return RunGit(LongTimeoutMilliseconds, "stash", "push", "-u", "-m", shelfMessage);
+        }
+
+        private GitCommandResult RunCommitWithMessageFile(IEnumerable<string> baseArguments, string message)
+        {
+            string messagePath = WriteTempCommitMessage(message);
+            try
+            {
+                var args = new List<string>(baseArguments) { "-F", messagePath };
+                return RunGit(LongTimeoutMilliseconds, args.ToArray());
+            }
+            finally
+            {
+                DeleteTempFile(messagePath);
+            }
+        }
+
+        private GitCommandResult RewriteHeadHistory(IList<string> commitHashes, string message, bool squash)
+        {
+            GitCommandResult headResult = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", "HEAD");
+            if (!headResult.Success)
+            {
+                return headResult;
+            }
+
+            string oldHead = FirstNonEmptyLine(headResult.StandardOutput);
+            GitCommandResult historyResult = RunGit(DefaultTimeoutMilliseconds, "rev-list", "--topo-order", "--reverse", "HEAD");
+            if (!historyResult.Success)
+            {
+                return historyResult;
+            }
+
+            List<string> history = SplitLines(historyResult.StandardOutput)
+                .Select(line => line.Trim())
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .ToList();
+            if (history.Count == 0)
+            {
+                return Failure("No commits were found on HEAD.");
+            }
+
+            var historySet = new HashSet<string>(history, StringComparer.Ordinal);
+            var selected = new HashSet<string>(StringComparer.Ordinal);
+            foreach (string hash in commitHashes.Where(hash => !string.IsNullOrWhiteSpace(hash)))
+            {
+                GitCommandResult resolved = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", hash.Trim() + "^{commit}");
+                if (!resolved.Success)
+                {
+                    return resolved;
+                }
+
+                string resolvedHash = FirstNonEmptyLine(resolved.StandardOutput);
+                if (!historySet.Contains(resolvedHash))
+                {
+                    return Failure("Commit " + ShortHash(resolvedHash) + " is not reachable from the current HEAD.");
+                }
+
+                selected.Add(resolvedHash);
+            }
+
+            if (!squash && selected.Count != 1)
+            {
+                return Failure("Select exactly one commit to rename.");
+            }
+
+            if (squash && selected.Count < 2)
+            {
+                return Failure("Select at least two commits to squash.");
+            }
+
+            int startIndex = history.FindIndex(hash => selected.Contains(hash));
+            int endIndex = history.FindLastIndex(hash => selected.Contains(hash));
+            if (startIndex < 0 || endIndex < startIndex)
+            {
+                return Failure("Selected commits were not found in HEAD history.");
+            }
+
+            if (squash)
+            {
+                for (int i = startIndex; i <= endIndex; i++)
+                {
+                    if (!selected.Contains(history[i]))
+                    {
+                        return Failure("Selected commits must be contiguous in the current HEAD history to squash.");
+                    }
+                }
+            }
+
+            var infos = new Dictionary<string, CommitRewriteInfo>(StringComparer.Ordinal);
+            for (int i = startIndex; i < history.Count; i++)
+            {
+                GitCommandResult infoResult = GetCommitRewriteInfo(history[i], out CommitRewriteInfo info);
+                if (!infoResult.Success)
+                {
+                    return infoResult;
+                }
+
+                infos[history[i]] = info;
+            }
+
+            var rewritten = new Dictionary<string, string>(StringComparer.Ordinal);
+            string squashedHash = string.Empty;
+            for (int i = startIndex; i < history.Count; i++)
+            {
+                string originalHash = history[i];
+                if (squash && i > startIndex && i <= endIndex)
+                {
+                    rewritten[originalHash] = squashedHash;
+                    continue;
+                }
+
+                CommitRewriteInfo source = infos[originalHash];
+                string treeHash = squash && i == startIndex
+                    ? infos[history[endIndex]].TreeHash
+                    : source.TreeHash;
+                string commitMessage = squash && i == startIndex
+                    ? message
+                    : (!squash && selected.Contains(originalHash) ? message : source.Message);
+                List<string> parents = RewriteParents(source.Parents, rewritten);
+
+                GitCommandResult createResult = CreateCommitFromTree(source, treeHash, parents, commitMessage);
+                if (!createResult.Success)
+                {
+                    return createResult;
+                }
+
+                string newHash = FirstNonEmptyLine(createResult.StandardOutput);
+                if (string.IsNullOrWhiteSpace(newHash))
+                {
+                    return Failure("Git did not return a rewritten commit hash.");
+                }
+
+                rewritten[originalHash] = newHash;
+                if (squash && i == startIndex)
+                {
+                    squashedHash = newHash;
+                }
+            }
+
+            if (!rewritten.TryGetValue(oldHead, out string newHead) || string.IsNullOrWhiteSpace(newHead))
+            {
+                return Failure("Could not resolve the rewritten HEAD.");
+            }
+
+            GitCommandResult updateResult = RunGit(DefaultTimeoutMilliseconds, "reset", "--soft", newHead);
+            if (!updateResult.Success)
+            {
+                return updateResult;
+            }
+
+            updateResult.StandardOutput = "Rewrote HEAD " + ShortHash(oldHead) + " -> " + ShortHash(newHead) + ".";
+            return updateResult;
+        }
+
+        private GitCommandResult GetCommitRewriteInfo(string hash, out CommitRewriteInfo info)
+        {
+            info = null;
+            GitCommandResult meta = RunGit(
+                DefaultTimeoutMilliseconds,
+                "show",
+                "-s",
+                "--format=%H%x1f%T%x1f%P%x1f%an%x1f%ae%x1f%aI",
+                hash);
+            if (!meta.Success)
+            {
+                return meta;
+            }
+
+            string firstLine = FirstNonEmptyLine(meta.StandardOutput);
+            string[] fields = firstLine.Split(FieldSeparator);
+            if (fields.Length < 6)
+            {
+                return Failure("Could not parse commit metadata for " + ShortHash(hash) + ".");
+            }
+
+            GitCommandResult message = GetCommitMessage(hash);
+            if (!message.Success)
+            {
+                return message;
+            }
+
+            info = new CommitRewriteInfo
+            {
+                Hash = fields[0],
+                TreeHash = fields[1],
+                Parents = fields[2]
+                    .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                    .ToList(),
+                AuthorName = fields[3],
+                AuthorEmail = fields[4],
+                AuthorDate = fields[5],
+                Message = message.StandardOutput
+            };
+            return new GitCommandResult();
+        }
+
+        private GitCommandResult CreateCommitFromTree(CommitRewriteInfo source, string treeHash, IList<string> parents, string message)
+        {
+            string messagePath = WriteTempCommitMessage(message);
+            try
+            {
+                var args = new List<string> { "commit-tree", treeHash };
+                foreach (string parent in parents)
+                {
+                    args.Add("-p");
+                    args.Add(parent);
+                }
+
+                args.Add("-F");
+                args.Add(messagePath);
+
+                var environment = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    { "GIT_AUTHOR_NAME", source.AuthorName },
+                    { "GIT_AUTHOR_EMAIL", source.AuthorEmail },
+                    { "GIT_AUTHOR_DATE", source.AuthorDate }
+                };
+                return RunGitWithEnvironment(environment, LongTimeoutMilliseconds, args.ToArray());
+            }
+            finally
+            {
+                DeleteTempFile(messagePath);
+            }
+        }
+
+        private static List<string> RewriteParents(IEnumerable<string> parents, IDictionary<string, string> rewritten)
+        {
+            var result = new List<string>();
+            foreach (string parent in parents)
+            {
+                string next = rewritten.TryGetValue(parent, out string rewrittenParent)
+                    ? rewrittenParent
+                    : parent;
+                if (!result.Contains(next))
+                {
+                    result.Add(next);
+                }
+            }
+
+            return result;
         }
 
         public UnitGitDiff GetFileDiff(UnitGitStatusEntry change)
@@ -438,6 +742,11 @@ namespace Orbiters.UnitGit.Editor
         public GitCommandResult RunGit(int timeoutMilliseconds, params string[] arguments)
         {
             return RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, ProcessLogReceived, arguments);
+        }
+
+        private GitCommandResult RunGitWithEnvironment(IDictionary<string, string> environment, int timeoutMilliseconds, params string[] arguments)
+        {
+            return RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, ProcessLogReceived, environment, arguments);
         }
 
         public bool IsGitAvailable()
@@ -1178,6 +1487,59 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
+        private static string WriteTempCommitMessage(string message)
+        {
+            string path = Path.Combine(Path.GetTempPath(), "unitgit-message-" + Guid.NewGuid().ToString("N") + ".txt");
+            File.WriteAllText(path, NormalizeCommitMessage(message) + "\n", new UTF8Encoding(false));
+            return path;
+        }
+
+        private static string NormalizeCommitMessage(string message)
+        {
+            return string.IsNullOrWhiteSpace(message)
+                ? string.Empty
+                : message.Trim();
+        }
+
+        private static void DeleteTempFile(string path)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static string FirstNonEmptyLine(string text)
+        {
+            return SplitLines(text)
+                .Select(line => line.Trim())
+                .FirstOrDefault(line => !string.IsNullOrWhiteSpace(line)) ?? string.Empty;
+        }
+
+        private static string TrimTrailingNewlines(string text)
+        {
+            return string.IsNullOrEmpty(text)
+                ? string.Empty
+                : text.TrimEnd('\r', '\n');
+        }
+
+        private static string ShortHash(string hash)
+        {
+            if (string.IsNullOrWhiteSpace(hash))
+            {
+                return string.Empty;
+            }
+
+            string trimmed = hash.Trim();
+            return trimmed.Length <= 8 ? trimmed : trimmed.Substring(0, 8);
+        }
+
         private static GitCommandResult RunProcess(string fileName, string timeoutMessage, string workingDirectory, int timeoutMilliseconds, params string[] arguments)
         {
             return RunProcess(fileName, timeoutMessage, workingDirectory, timeoutMilliseconds, null, arguments);
@@ -1189,6 +1551,18 @@ namespace Orbiters.UnitGit.Editor
             string workingDirectory,
             int timeoutMilliseconds,
             UnitGitProcessLogHandler logHandler,
+            params string[] arguments)
+        {
+            return RunProcess(fileName, timeoutMessage, workingDirectory, timeoutMilliseconds, logHandler, null, arguments);
+        }
+
+        private static GitCommandResult RunProcess(
+            string fileName,
+            string timeoutMessage,
+            string workingDirectory,
+            int timeoutMilliseconds,
+            UnitGitProcessLogHandler logHandler,
+            IDictionary<string, string> environment,
             params string[] arguments)
         {
             var result = new GitCommandResult();
@@ -1209,6 +1583,17 @@ namespace Orbiters.UnitGit.Editor
                 };
 
                 startInfo.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
+                if (environment != null)
+                {
+                    foreach (KeyValuePair<string, string> item in environment)
+                    {
+                        if (!string.IsNullOrWhiteSpace(item.Key))
+                        {
+                            startInfo.EnvironmentVariables[item.Key] = item.Value ?? string.Empty;
+                        }
+                    }
+                }
+
                 logHandler?.Invoke("> " + FormatCommandLine(fileName, arguments));
                 logHandler?.Invoke("cwd: " + startInfo.WorkingDirectory);
 

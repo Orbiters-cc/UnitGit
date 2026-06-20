@@ -74,16 +74,57 @@ namespace Orbiters.UnitGit.Editor
             var commitPanel = new VisualElement();
             commitPanel.AddToClassList("unitgit-local-commit-panel");
 
+            var amendToggle = new Toggle("Amend");
+            amendToggle.value = commitAmend;
+            amendToggle.AddToClassList("unitgit-local-amend-toggle");
+            amendToggle.RegisterValueChangedCallback(evt => SetAmendCommit(evt.newValue));
+            commitPanel.Add(amendToggle);
+
             var message = new TextField();
             message.multiline = false;
             message.value = commitMessage;
             message.AddToClassList("unitgit-local-commit-message");
             message.RegisterValueChangedCallback(evt => commitMessage = evt.newValue);
             commitPanel.Add(message);
-            commitPanel.Add(BuildActionButton("Commit Staged", "unitgit-button--primary", CommitStaged));
+            commitPanel.Add(BuildActionButton(commitAmend ? "Amend Commit" : "Commit Staged", "unitgit-button--primary", CommitStaged));
             pane.Add(commitPanel);
 
             return pane;
+        }
+
+        private void SetAmendCommit(bool value)
+        {
+            if (commitAmend == value)
+            {
+                return;
+            }
+
+            if (value)
+            {
+                commitMessageBeforeAmend = commitMessage;
+                GitCommandResult result = gitService != null ? gitService.GetHeadCommitMessage() : null;
+                if (result == null || !result.Success)
+                {
+                    string message = result != null && !string.IsNullOrWhiteSpace(result.Message)
+                        ? result.Message
+                        : "Could not read the previous commit message.";
+                    EditorUtility.DisplayDialog("Amend Commit", message, "OK");
+                    commitAmend = false;
+                    RebuildContent();
+                    return;
+                }
+
+                commitMessage = result.StandardOutput;
+                commitAmend = true;
+            }
+            else
+            {
+                commitAmend = false;
+                commitMessage = commitMessageBeforeAmend;
+                commitMessageBeforeAmend = string.Empty;
+            }
+
+            RebuildContent();
         }
 
         private void AddChangedFileGroups(VisualElement parent)

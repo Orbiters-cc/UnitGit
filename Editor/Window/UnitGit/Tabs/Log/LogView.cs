@@ -125,7 +125,7 @@ namespace Orbiters.UnitGit.Editor
                         scroll.Add(BuildReleaseCheckpointRow(commit, release));
                     }
 
-                    scroll.Add(BuildCommitRow(commit, index, visibleCommits.Count, release != null));
+                    scroll.Add(BuildCommitRow(commit, index, visibleCommits.Count));
                     index++;
                 }
             }
@@ -161,20 +161,167 @@ namespace Orbiters.UnitGit.Editor
 
         private void SelectCommitFromRow(UnitGitCommit commit, bool selectRelease)
         {
+            SelectCommitFromRow(commit, selectRelease, false, false);
+        }
+
+        private void SelectCommitFromRow(UnitGitCommit commit, bool selectRelease, bool rangeSelect, bool toggleSelect)
+        {
             if (commit == null)
             {
                 return;
             }
 
-            selectedCommit = commit;
-            selectedDetails = gitService != null ? gitService.GetCommitDetails(commit.FullHash) : null;
-            selectedReleaseId = selectRelease && !string.IsNullOrWhiteSpace(commit.ReleaseId)
-                ? commit.ReleaseId
-                : string.Empty;
+            if (selectRelease)
+            {
+                selectedCommitHashes.Clear();
+                selectionAnchorHash = string.Empty;
+                SetPrimarySelectedCommit(commit, commit.ReleaseId);
+                RebuildContent();
+                return;
+            }
+
+            selectedReleaseId = string.Empty;
+            if (rangeSelect)
+            {
+                ApplyRangeCommitSelection(commit, toggleSelect);
+            }
+            else if (toggleSelect)
+            {
+                ApplyToggleCommitSelection(commit);
+            }
+            else
+            {
+                selectedCommitHashes.Clear();
+                selectedCommitHashes.Add(commit.FullHash);
+                selectionAnchorHash = commit.FullHash;
+                SetPrimarySelectedCommit(commit, string.Empty);
+            }
+
             RebuildContent();
         }
 
-        private static VisualElement BuildSelectableRow(Action select)
+        private void SetPrimarySelectedCommit(UnitGitCommit commit, string releaseId)
+        {
+            selectedCommit = commit;
+            selectedDetails = gitService != null && commit != null ? gitService.GetCommitDetails(commit.FullHash) : null;
+            selectedReleaseId = string.IsNullOrWhiteSpace(releaseId) ? string.Empty : releaseId;
+        }
+
+        private void ApplyToggleCommitSelection(UnitGitCommit commit)
+        {
+            if (selectedCommitHashes.Contains(commit.FullHash))
+            {
+                selectedCommitHashes.Remove(commit.FullHash);
+                UnitGitCommit nextCommit = GetSelectedCommitsInLogOrder().FirstOrDefault();
+                SetPrimarySelectedCommit(nextCommit, string.Empty);
+            }
+            else
+            {
+                selectedCommitHashes.Add(commit.FullHash);
+                selectionAnchorHash = commit.FullHash;
+                SetPrimarySelectedCommit(commit, string.Empty);
+            }
+        }
+
+        private void ApplyRangeCommitSelection(UnitGitCommit commit, bool addToExistingSelection)
+        {
+            string anchorHash = !string.IsNullOrWhiteSpace(selectionAnchorHash)
+                ? selectionAnchorHash
+                : (selectedCommit != null ? selectedCommit.FullHash : commit.FullHash);
+            List<UnitGitCommit> range = GetCommitRange(anchorHash, commit.FullHash);
+            if (!addToExistingSelection)
+            {
+                selectedCommitHashes.Clear();
+            }
+
+            foreach (UnitGitCommit rangeCommit in range)
+            {
+                selectedCommitHashes.Add(rangeCommit.FullHash);
+            }
+
+            if (string.IsNullOrWhiteSpace(selectionAnchorHash))
+            {
+                selectionAnchorHash = anchorHash;
+            }
+
+            SetPrimarySelectedCommit(commit, string.Empty);
+        }
+
+        private List<UnitGitCommit> GetCommitRange(string firstHash, string secondHash)
+        {
+            if (snapshot == null || snapshot.Commits == null || snapshot.Commits.Count == 0)
+            {
+                return new List<UnitGitCommit>();
+            }
+
+            int firstIndex = snapshot.Commits.FindIndex(commit => string.Equals(commit.FullHash, firstHash, StringComparison.Ordinal));
+            int secondIndex = snapshot.Commits.FindIndex(commit => string.Equals(commit.FullHash, secondHash, StringComparison.Ordinal));
+            if (firstIndex < 0 || secondIndex < 0)
+            {
+                return snapshot.Commits
+                    .Where(commit => string.Equals(commit.FullHash, secondHash, StringComparison.Ordinal))
+                    .ToList();
+            }
+
+            int start = Math.Min(firstIndex, secondIndex);
+            int count = Math.Abs(firstIndex - secondIndex) + 1;
+            return snapshot.Commits.Skip(start).Take(count).ToList();
+        }
+
+        private List<UnitGitCommit> GetSelectedCommitsInLogOrder()
+        {
+            if (snapshot == null || snapshot.Commits == null || selectedCommitHashes.Count == 0)
+            {
+                return new List<UnitGitCommit>();
+            }
+
+            return snapshot.Commits
+                .Where(commit => selectedCommitHashes.Contains(commit.FullHash))
+                .ToList();
+        }
+
+        private void HandleCommitRowMouseDown(MouseDownEvent evt, UnitGitCommit commit)
+        {
+            if (evt.button != 0 && evt.button != 1)
+            {
+                return;
+            }
+
+            evt.StopPropagation();
+            bool isContextClick = evt.button == 1;
+            bool selectedByContext = isContextClick && selectedCommitHashes.Contains(commit.FullHash);
+            if (selectedByContext)
+            {
+                SetPrimarySelectedCommit(commit, string.Empty);
+                RebuildContent();
+            }
+            else
+            {
+                SelectCommitFromRow(commit, false, evt.shiftKey, evt.ctrlKey || evt.commandKey);
+            }
+
+            if (isContextClick)
+            {
+                ShowCommitContextMenu(commit);
+            }
+        }
+
+        private void HandleReleaseRowMouseDown(MouseDownEvent evt, UnitGitCommit commit, UnitGitReleaseEntry release)
+        {
+            if (evt.button != 0 && evt.button != 1)
+            {
+                return;
+            }
+
+            evt.StopPropagation();
+            SelectCommitFromRow(commit, true);
+            if (evt.button == 1)
+            {
+                ShowReleaseContextMenu(commit, release);
+            }
+        }
+
+        private static VisualElement BuildSelectableRow(Action<MouseDownEvent> handleMouseDown, Action select)
         {
             var row = new VisualElement
             {
@@ -182,20 +329,19 @@ namespace Orbiters.UnitGit.Editor
                 pickingMode = PickingMode.Position
             };
 
-            RegisterRowSelection(row, select);
+            RegisterRowSelection(row, handleMouseDown, select);
             return row;
         }
 
         // Selection listens to mouse-down so row feedback happens before any expensive details work.
-        private static void RegisterRowSelection(VisualElement row, Action select)
+        private static void RegisterRowSelection(VisualElement row, Action<MouseDownEvent> handleMouseDown, Action select)
         {
             row.RegisterCallback<MouseDownEvent>(evt =>
             {
-                if (evt.button == 0)
+                if (evt.button == 0 || evt.button == 1)
                 {
-                    evt.StopPropagation();
                     row.Focus();
-                    select();
+                    handleMouseDown(evt);
                 }
             });
 
@@ -209,13 +355,11 @@ namespace Orbiters.UnitGit.Editor
             });
         }
 
-        private VisualElement BuildCommitRow(UnitGitCommit commit, int index, int totalCommits, bool isReleaseCommit)
+        private VisualElement BuildCommitRow(UnitGitCommit commit, int index, int totalCommits)
         {
-            VisualElement row = BuildSelectableRow(() => SelectCommitFromRow(commit, false));
+            VisualElement row = BuildSelectableRow(evt => HandleCommitRowMouseDown(evt, commit), () => SelectCommitFromRow(commit, false));
             row.AddToClassList("unitgit-log-row");
-            bool isSelected = selectedCommit != null &&
-                              selectedCommit.FullHash == commit.FullHash &&
-                              string.IsNullOrEmpty(selectedReleaseId);
+            bool isSelected = selectedCommitHashes.Contains(commit.FullHash) && string.IsNullOrEmpty(selectedReleaseId);
             if (isSelected)
             {
                 row.AddToClassList("unitgit-log-row--selected");

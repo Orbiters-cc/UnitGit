@@ -240,9 +240,25 @@ namespace Orbiters.UnitGit.Editor
 
             if (snapshot.HasRepository && snapshot.Commits.Count > 0)
             {
+                selectedCommitHashes.RemoveWhere(hash => snapshot.Commits.All(commit => commit.FullHash != hash));
+                if (!string.IsNullOrWhiteSpace(selectionAnchorHash) &&
+                    snapshot.Commits.All(commit => commit.FullHash != selectionAnchorHash))
+                {
+                    selectionAnchorHash = string.Empty;
+                }
+
                 if (selectedCommit == null || snapshot.Commits.All(commit => commit.FullHash != selectedCommit.FullHash))
                 {
-                    selectedCommit = snapshot.Commits[0];
+                    selectedCommit = selectedCommitHashes.Count > 0
+                        ? snapshot.Commits.FirstOrDefault(commit => selectedCommitHashes.Contains(commit.FullHash)) ?? snapshot.Commits[0]
+                        : snapshot.Commits[0];
+                    selectedReleaseId = string.Empty;
+                }
+
+                if (selectedCommitHashes.Count == 0 && selectedCommit != null && string.IsNullOrEmpty(selectedReleaseId))
+                {
+                    selectedCommitHashes.Add(selectedCommit.FullHash);
+                    selectionAnchorHash = selectedCommit.FullHash;
                 }
 
                 if (result.SelectedDetails != null &&
@@ -263,6 +279,9 @@ namespace Orbiters.UnitGit.Editor
             else
             {
                 selectedCommit = null;
+                selectedCommitHashes.Clear();
+                selectionAnchorHash = string.Empty;
+                selectedReleaseId = string.Empty;
                 selectedDetails = null;
             }
         }

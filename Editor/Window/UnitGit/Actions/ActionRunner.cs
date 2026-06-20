@@ -14,7 +14,7 @@ namespace Orbiters.UnitGit.Editor
 {
     internal sealed partial class UnitGitWindow
     {
-        private void RunAction(string label, Func<GitCommandResult> action)
+        private void RunAction(string label, Func<GitCommandResult> action, Action<GitCommandResult> onComplete = null)
         {
             if (busy)
             {
@@ -39,7 +39,7 @@ namespace Orbiters.UnitGit.Editor
                         gitService.ProcessLogReceived = null;
                     }
                 })
-                .ContinueWith(task => QueueMainThreadAction(() => CompleteGitAction(label, task)));
+                .ContinueWith(task => QueueMainThreadAction(() => CompleteGitAction(label, task, onComplete)));
         }
 
         private static GitCommandResult ExecuteGitAction(Func<GitCommandResult> action)
@@ -58,7 +58,7 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
-        private void CompleteGitAction(string label, Task<GitCommandResult> task)
+        private void CompleteGitAction(string label, Task<GitCommandResult> task, Action<GitCommandResult> onComplete)
         {
             if (this == null)
             {
@@ -80,6 +80,15 @@ namespace Orbiters.UnitGit.Editor
                     ? result.Message
                     : "The command failed.";
                 EditorUtility.DisplayDialog("Unit Git", message, "OK");
+            }
+
+            try
+            {
+                onComplete?.Invoke(result);
+            }
+            catch (Exception ex)
+            {
+                AppendConsole(label, "completion callback failed: " + ex.Message);
             }
 
             RefreshSnapshot();

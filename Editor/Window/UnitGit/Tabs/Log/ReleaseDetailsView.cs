@@ -69,6 +69,12 @@ namespace Orbiters.UnitGit.Editor
                 card.Add(title);
             }
 
+            VisualElement thumbnail = BuildReleaseThumbnail(release);
+            if (thumbnail != null)
+            {
+                card.Add(thumbnail);
+            }
+
             string formattedDate = FormatReleaseDate(release.date);
             if (!string.IsNullOrWhiteSpace(formattedDate))
             {
@@ -137,6 +143,86 @@ namespace Orbiters.UnitGit.Editor
             return row;
         }
 
+        private VisualElement BuildReleaseThumbnail(UnitGitReleaseEntry release)
+        {
+            string fullPath = ResolveReleaseProjectPath(release != null ? release.thumbnailPath : string.Empty);
+            if (string.IsNullOrWhiteSpace(fullPath) || !File.Exists(fullPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                var texture = new Texture2D(2, 2);
+                if (!texture.LoadImage(File.ReadAllBytes(fullPath)))
+                {
+                    UnityEngine.Object.DestroyImmediate(texture);
+                    return null;
+                }
+
+                texture.name = Path.GetFileName(fullPath);
+
+                var frame = new VisualElement();
+                frame.AddToClassList("unitgit-release-thumbnail-frame");
+                frame.RegisterCallback<DetachFromPanelEvent>(_ =>
+                {
+                    if (texture != null)
+                    {
+                        UnityEngine.Object.DestroyImmediate(texture);
+                    }
+                });
+
+                var image = new Image
+                {
+                    image = texture,
+                    scaleMode = ScaleMode.ScaleToFit
+                };
+                image.AddToClassList("unitgit-release-thumbnail");
+                frame.Add(image);
+                return frame;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private string ResolveReleaseProjectPath(string projectRelativePath)
+        {
+            if (string.IsNullOrWhiteSpace(projectRelativePath) || Path.IsPathRooted(projectRelativePath))
+            {
+                return string.Empty;
+            }
+
+            string projectRoot = snapshot != null && !string.IsNullOrWhiteSpace(snapshot.ProjectRoot)
+                ? snapshot.ProjectRoot
+                : (gitService != null ? gitService.ProjectRoot : string.Empty);
+            if (string.IsNullOrWhiteSpace(projectRoot))
+            {
+                return string.Empty;
+            }
+
+            string rootFullPath = Path.GetFullPath(projectRoot);
+            string candidatePath = Path.GetFullPath(Path.Combine(
+                rootFullPath,
+                projectRelativePath.Trim().Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar)));
+            if (!IsPathInsideRoot(rootFullPath, candidatePath))
+            {
+                return string.Empty;
+            }
+
+            return candidatePath;
+        }
+
+        private static bool IsPathInsideRoot(string rootFullPath, string candidatePath)
+        {
+            string root = rootFullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                          + Path.DirectorySeparatorChar;
+            string candidate = candidatePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                               + Path.DirectorySeparatorChar;
+            return candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+
         private static string FormatReleaseDate(string isoDate)
         {
             if (string.IsNullOrWhiteSpace(isoDate))
@@ -159,7 +245,13 @@ namespace Orbiters.UnitGit.Editor
                 return null;
             }
 
-            UnitGitReleaseEntry release = UnitGitReleases.FindById(snapshot != null ? snapshot.Releases : null, commit.ReleaseId);
+            UnitGitReleaseFile releases = snapshot != null ? snapshot.Releases : null;
+            if (UnitGitReleases.IsHidden(releases, commit.ReleaseId))
+            {
+                return null;
+            }
+
+            UnitGitReleaseEntry release = UnitGitReleases.FindById(releases, commit.ReleaseId);
             if (release != null)
             {
                 return release;
@@ -185,7 +277,7 @@ namespace Orbiters.UnitGit.Editor
 
         private VisualElement BuildReleaseCheckpointRow(UnitGitCommit commit, UnitGitReleaseEntry release)
         {
-            VisualElement row = BuildSelectableRow(() => SelectCommitFromRow(commit, true));
+            VisualElement row = BuildSelectableRow(evt => HandleReleaseRowMouseDown(evt, commit, release), () => SelectCommitFromRow(commit, true));
             row.AddToClassList("unitgit-release-row");
 
             // The checkpoint follows the color of the branch its commit belongs to.

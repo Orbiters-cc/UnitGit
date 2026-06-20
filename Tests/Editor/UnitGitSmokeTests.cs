@@ -184,6 +184,165 @@ namespace Orbiters.UnitGit.Editor.Tests
             }
         }
 
+        [Test]
+        public void CommitMessageWithSpacesAndAmendUseMessageFile()
+        {
+            RequireGit();
+            string root = CreateTempUnityProjectFolder();
+            try
+            {
+                var service = new UnitGitService(root);
+                ConfigureTempRepository(service);
+
+                File.WriteAllText(Path.Combine(root, "Assets", "file.txt"), "one\n");
+                AssertGit(service.StageAll());
+                AssertGit(service.Commit("message with spaces"));
+
+                File.WriteAllText(Path.Combine(root, "Assets", "file.txt"), "two\n");
+                AssertGit(service.StageAll());
+                AssertGit(service.CommitAmend("amended message with spaces"));
+
+                GitCommandResult message = service.GetHeadCommitMessage();
+                AssertGit(message);
+                Assert.That(message.StandardOutput, Is.EqualTo("amended message with spaces"));
+            }
+            finally
+            {
+                DeleteTempFolder(root);
+            }
+        }
+
+        [Test]
+        public void HideReleaseStoresHiddenIdWithoutDeletingReleaseEntry()
+        {
+            string root = CreateTempUnityProjectFolder();
+            try
+            {
+                var file = new UnitGitReleaseFile();
+                file.releases.Add(new UnitGitReleaseEntry
+                {
+                    id = "release-hide-test",
+                    name = "Hidden Release"
+                });
+                File.WriteAllText(UnitGitReleases.GetReleasesFilePath(root), UnityEngine.JsonUtility.ToJson(file, true));
+
+                UnitGitReleaseResult result = UnitGitReleases.HideRelease(root, "release-hide-test");
+
+                Assert.That(result.Success, Is.True, result.Message);
+                UnitGitReleaseFile loaded = UnitGitReleases.Load(root);
+                Assert.That(UnitGitReleases.FindById(loaded, "release-hide-test"), Is.Not.Null);
+                Assert.That(UnitGitReleases.IsHidden(loaded, "release-hide-test"), Is.True);
+            }
+            finally
+            {
+                DeleteTempFolder(root);
+            }
+        }
+
+        [Test]
+        public void RenameCommitRewritesSelectedCommitMessage()
+        {
+            RequireGit();
+            string root = CreateTempUnityProjectFolder();
+            try
+            {
+                var service = new UnitGitService(root);
+                ConfigureTempRepository(service);
+
+                File.WriteAllText(Path.Combine(root, "Assets", "file.txt"), "one\n");
+                AssertGit(service.StageAll());
+                AssertGit(service.Commit("one"));
+                string first = GetHead(service);
+
+                File.WriteAllText(Path.Combine(root, "Assets", "file.txt"), "two\n");
+                AssertGit(service.StageAll());
+                AssertGit(service.Commit("two"));
+
+                AssertGit(service.RenameCommit(first, "renamed one"));
+
+                GitCommandResult log = service.RunGit(30000, "log", "--format=%s");
+                AssertGit(log);
+                Assert.That(log.StandardOutput, Does.Contain("renamed one"));
+                Assert.That(log.StandardOutput, Does.Contain("two"));
+                Assert.That(log.StandardOutput, Does.Not.Contain("\none\n"));
+            }
+            finally
+            {
+                DeleteTempFolder(root);
+            }
+        }
+
+        [Test]
+        public void RenameCommitKeepsSnapshotUsableWithLocalChanges()
+        {
+            RequireGit();
+            string root = CreateTempUnityProjectFolder();
+            try
+            {
+                var service = new UnitGitService(root);
+                ConfigureTempRepository(service);
+
+                string assetPath = Path.Combine(root, "Assets", "file.txt");
+                File.WriteAllText(assetPath, "one\n");
+                AssertGit(service.StageAll());
+                AssertGit(service.Commit("one"));
+                string first = GetHead(service);
+
+                File.WriteAllText(assetPath, "two\n");
+                AssertGit(service.StageAll());
+                AssertGit(service.Commit("two"));
+
+                File.WriteAllText(assetPath, "dirty local change\n");
+
+                AssertGit(service.RenameCommit(first, "renamed one"));
+                UnitGitSnapshot snapshot = service.BuildSnapshot(string.Empty);
+
+                Assert.That(snapshot.HasRepository, Is.True);
+                Assert.That(snapshot.HasCommits, Is.True);
+                Assert.That(snapshot.LastError, Is.Empty);
+                Assert.That(snapshot.Commits, Is.Not.Empty);
+                Assert.That(snapshot.Changes.Any(change => change.Path == "Assets/file.txt"), Is.True);
+            }
+            finally
+            {
+                DeleteTempFolder(root);
+            }
+        }
+
+        [Test]
+        public void SquashCommitsRewritesContiguousSelectionIntoOneCommit()
+        {
+            RequireGit();
+            string root = CreateTempUnityProjectFolder();
+            try
+            {
+                var service = new UnitGitService(root);
+                ConfigureTempRepository(service);
+
+                File.WriteAllText(Path.Combine(root, "Assets", "file.txt"), "one\n");
+                AssertGit(service.StageAll());
+                AssertGit(service.Commit("one"));
+                string first = GetHead(service);
+
+                File.WriteAllText(Path.Combine(root, "Assets", "file.txt"), "two\n");
+                AssertGit(service.StageAll());
+                AssertGit(service.Commit("two"));
+                string second = GetHead(service);
+
+                AssertGit(service.SquashCommits(new[] { first, second }, "one and two"));
+
+                GitCommandResult log = service.RunGit(30000, "log", "--format=%s");
+                AssertGit(log);
+                Assert.That(log.StandardOutput, Does.Contain("one and two"));
+                Assert.That(log.StandardOutput, Does.Not.Contain("\none\n"));
+                Assert.That(log.StandardOutput, Does.Not.Contain("\ntwo\n"));
+            }
+            finally
+            {
+                DeleteTempFolder(root);
+            }
+        }
+
         private static void RequireGit()
         {
             var service = new UnitGitService(Path.GetTempPath());
@@ -208,6 +367,21 @@ namespace Orbiters.UnitGit.Editor.Tests
             Directory.CreateDirectory(Path.Combine(root, "Packages"));
             File.WriteAllText(Path.Combine(root, "Packages", "manifest.json"), "{}\n");
             return root;
+        }
+
+        private static void ConfigureTempRepository(UnitGitService service)
+        {
+            AssertGit(service.RunGit(30000, "init"));
+            AssertGit(service.RunGit(30000, "config", "user.email", "unitgit@example.test"));
+            AssertGit(service.RunGit(30000, "config", "user.name", "Unit Git Tests"));
+            AssertGit(service.RunGit(30000, "config", "core.autocrlf", "false"));
+        }
+
+        private static string GetHead(UnitGitService service)
+        {
+            GitCommandResult result = service.RunGit(30000, "rev-parse", "HEAD");
+            AssertGit(result);
+            return result.StandardOutput.Trim();
         }
 
         private static void DeleteTempFolder(string root)

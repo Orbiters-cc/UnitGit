@@ -155,7 +155,24 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            if (!snapshot.HasRepository || !snapshot.HasCommits)
+            if (!snapshot.HasRepository)
+            {
+                contentRoot.Add(BuildInitializerPanel());
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(snapshot.LastError))
+            {
+                VisualElement panel = BuildMessagePanel("Git state unavailable", snapshot.LastError);
+                var actions = new VisualElement();
+                actions.AddToClassList("unitgit-message-actions");
+                actions.Add(BuildActionButton("Refresh", "unitgit-button--primary", RefreshSnapshot));
+                panel.Add(actions);
+                contentRoot.Add(panel);
+                return;
+            }
+
+            if (!snapshot.HasCommits)
             {
                 contentRoot.Add(BuildInitializerPanel());
                 return;

@@ -48,6 +48,8 @@ namespace Orbiters.UnitGit.Editor
         private UnitGitProjectInitializer initializer;
         private UnitGitSnapshot snapshot;
         private UnitGitCommit selectedCommit;
+        private readonly HashSet<string> selectedCommitHashes = new HashSet<string>(StringComparer.Ordinal);
+        private string selectionAnchorHash = string.Empty;
         private string selectedReleaseId = string.Empty;
         private UnitGitCommitDetails selectedDetails;
         private UnitGitBranch selectedBranch;
@@ -65,6 +67,8 @@ namespace Orbiters.UnitGit.Editor
         private int diffSearchMatchIndex;
         private TextField diffSearchField;
         private string commitMessage = string.Empty;
+        private string commitMessageBeforeAmend = string.Empty;
+        private bool commitAmend;
         private bool excludePackageFolderFromInitialCommit = true;
         private bool busy;
         private bool refreshQueued;

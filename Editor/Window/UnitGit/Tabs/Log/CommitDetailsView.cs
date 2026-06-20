@@ -46,25 +46,85 @@ namespace Orbiters.UnitGit.Editor
 
         private VisualElement BuildChangedFilesTree()
         {
+            List<string> changedFiles = GetSelectedChangedFiles();
+            int selectedCount = GetSelectedCommitsInLogOrder().Count;
             var panel = new VisualElement();
             panel.AddToClassList("unitgit-files-panel");
-            panel.Add(BuildSectionHeader("Changed Files", selectedDetails != null ? selectedDetails.ChangedFiles.Count + " files" : "No commit selected"));
+            panel.Add(BuildSectionHeader(
+                "Changed Files",
+                changedFiles.Count > 0
+                    ? changedFiles.Count + " files" + (selectedCount > 1 ? " across " + selectedCount + " commits" : string.Empty)
+                    : "No commit selected"));
 
             var scroll = new ScrollView();
             scroll.name = "unitgit-changed-files-scroll";
             scroll.AddToClassList("unitgit-files-scroll");
 
-            if (selectedDetails == null || selectedDetails.ChangedFiles.Count == 0)
+            if (changedFiles.Count == 0)
             {
                 scroll.Add(BuildEmptyState("Select a commit to inspect changed files."));
             }
             else
             {
-                AddChangedFileTree(scroll, selectedDetails.ChangedFiles);
+                AddChangedFileTree(scroll, changedFiles);
             }
 
             panel.Add(scroll);
             return panel;
+        }
+
+        private List<string> GetSelectedChangedFiles()
+        {
+            var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (UnitGitCommitDetails details in GetSelectedDetailsInLogOrder())
+            {
+                if (details == null || details.ChangedFiles == null)
+                {
+                    continue;
+                }
+
+                foreach (string file in details.ChangedFiles)
+                {
+                    if (!string.IsNullOrWhiteSpace(file))
+                    {
+                        files.Add(file.Trim());
+                    }
+                }
+            }
+
+            return files.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        private List<UnitGitCommitDetails> GetSelectedDetailsInLogOrder()
+        {
+            var details = new List<UnitGitCommitDetails>();
+            foreach (UnitGitCommit commit in GetSelectedCommitsInLogOrder())
+            {
+                UnitGitCommitDetails commitDetails = GetDetailsForCommit(commit);
+                if (commitDetails != null)
+                {
+                    details.Add(commitDetails);
+                }
+            }
+
+            return details;
+        }
+
+        private UnitGitCommitDetails GetDetailsForCommit(UnitGitCommit commit)
+        {
+            if (commit == null || gitService == null)
+            {
+                return null;
+            }
+
+            if (selectedDetails != null &&
+                selectedDetails.Commit != null &&
+                string.Equals(selectedDetails.Commit.FullHash, commit.FullHash, StringComparison.Ordinal))
+            {
+                return selectedDetails;
+            }
+
+            return gitService.GetCommitDetails(commit.FullHash);
         }
 
         private void AddChangedFileTree(VisualElement parent, IEnumerable<string> files)
@@ -126,6 +186,12 @@ namespace Orbiters.UnitGit.Editor
             var card = new VisualElement();
             card.AddToClassList("unitgit-details-card");
 
+            List<UnitGitCommit> selectedCommits = GetSelectedCommitsInLogOrder();
+            if (selectedCommits.Count > 1)
+            {
+                return BuildMultiCommitDetailsCard(card, selectedCommits);
+            }
+
             if (selectedDetails == null || selectedDetails.Commit == null)
             {
                 card.Add(BuildEmptyState("No commit selected."));
@@ -156,6 +222,26 @@ namespace Orbiters.UnitGit.Editor
                 var decorations = new Label(selectedDetails.Commit.Decorations);
                 decorations.AddToClassList("unitgit-decoration-line");
                 card.Add(decorations);
+            }
+
+            return card;
+        }
+
+        private VisualElement BuildMultiCommitDetailsCard(VisualElement card, IList<UnitGitCommit> commits)
+        {
+            var subject = new Label(commits.Count + " commits selected");
+            subject.AddToClassList("unitgit-details-title");
+            card.Add(subject);
+
+            foreach (UnitGitCommit commit in commits)
+            {
+                var hash = new Label(commit.ShortHash + "  " + commit.AuthorName);
+                hash.AddToClassList("unitgit-details-hash");
+                card.Add(hash);
+
+                var title = new Label(commit.Subject);
+                title.AddToClassList("unitgit-details-muted");
+                card.Add(title);
             }
 
             return card;

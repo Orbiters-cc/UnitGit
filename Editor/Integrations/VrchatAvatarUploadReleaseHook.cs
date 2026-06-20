@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using UnityEditor;
@@ -21,6 +22,9 @@ namespace Orbiters.UnitGit.Editor
     {
         private const string ToolName = "VRChat SDK";
         private const string ReleaseType = "avatar upload";
+        private const string ReleaseAssetsFolderName = ".unitgit-release-assets";
+        private const string AvatarThumbnailAssetsFolderName = "vrchat-avatar-thumbnails";
+        private const string BuilderThumbnailPathFieldName = "_newThumbnailImagePath";
         private static readonly ConcurrentQueue<Action> MainThreadActions = new ConcurrentQueue<Action>();
         private static readonly Queue<AvatarUploadContext> PendingContexts = new Queue<AvatarUploadContext>();
 
@@ -114,7 +118,9 @@ namespace Orbiters.UnitGit.Editor
 
         private static void OnSdkUploadStart(object sender, EventArgs args)
         {
-            EnsureContext().UploadStartedUtc = DateTime.UtcNow;
+            AvatarUploadContext context = EnsureContext();
+            context.UploadStartedUtc = DateTime.UtcNow;
+            CaptureThumbnailSource(context, sender);
         }
 
         private static void OnSdkUploadSuccess(object sender, string avatarId)
@@ -139,7 +145,6 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            context.UploadFinishMessage = message ?? string.Empty;
             QueueUploadCommit(context);
         }
 
@@ -168,8 +173,7 @@ namespace Orbiters.UnitGit.Editor
                 BuildTarget = EditorUserBuildSettings.activeBuildTarget.ToString(),
                 Platform = GetPlatformLabel(EditorUserBuildSettings.activeBuildTarget),
                 SdkAvatarPackageVersion = GetPackageVersion(typeof(IVRCSdkAvatarBuilderApi).Assembly),
-                SdkBasePackageVersion = GetPackageVersion(typeof(IVRCSdkBuilderApi).Assembly),
-                CapturedUtc = DateTime.UtcNow
+                SdkBasePackageVersion = GetPackageVersion(typeof(IVRCSdkBuilderApi).Assembly)
             };
 
             if (avatarObject == null)
@@ -197,6 +201,12 @@ namespace Orbiters.UnitGit.Editor
             {
                 Debug.Log("[UnitGit] VRChat avatar upload commit skipped by Unit Git settings.");
                 return;
+            }
+
+            string projectRoot = UnitGitService.GetUnityProjectRoot();
+            if (UnitGitSettings.AvatarUploadReleaseRowEnabled)
+            {
+                context.ThumbnailPath = SaveThumbnailSnapshot(context, projectRoot);
             }
 
             if (!SaveProjectStateForUploadCommit(out string saveError))
@@ -345,8 +355,88 @@ namespace Orbiters.UnitGit.Editor
                 changelog = "Avatar uploaded with the VRChat SDK.",
                 date = DateTime.UtcNow.ToString("o"),
                 author = Environment.UserName,
+                thumbnailPath = context.ThumbnailPath,
                 fields = fields
             };
+        }
+
+        private static void CaptureThumbnailSource(AvatarUploadContext context, object builder)
+        {
+            if (context == null)
+            {
+                return;
+            }
+
+            context.ThumbnailSourcePath = FirstExistingFilePath(
+                AvatarBuilderSessionState.AvatarThumbPath,
+                GetBuilderThumbnailPath(builder));
+        }
+
+        private static string GetBuilderThumbnailPath(object builder)
+        {
+            if (builder == null)
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                FieldInfo field = builder.GetType().GetField(
+                    BuilderThumbnailPathFieldName,
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                return field != null ? field.GetValue(builder) as string ?? string.Empty : string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string SaveThumbnailSnapshot(AvatarUploadContext context, string projectRoot)
+        {
+            if (context == null || string.IsNullOrWhiteSpace(projectRoot))
+            {
+                return string.Empty;
+            }
+
+            string sourcePath = FirstExistingFilePath(context.ThumbnailSourcePath);
+            if (string.IsNullOrWhiteSpace(sourcePath))
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                string folderRelativePath = ReleaseAssetsFolderName + "/" + AvatarThumbnailAssetsFolderName;
+                string folderFullPath = Path.Combine(projectRoot, ReleaseAssetsFolderName, AvatarThumbnailAssetsFolderName);
+                Directory.CreateDirectory(folderFullPath);
+
+                string extension = Path.GetExtension(sourcePath);
+                if (string.IsNullOrWhiteSpace(extension) || extension.Length > 8)
+                {
+                    extension = ".png";
+                }
+
+                string avatarKey = Sanitize(FirstNonEmpty(context.AvatarId, context.BlueprintId, context.AvatarName), "avatar");
+                DateTime timestamp = context.UploadSucceededUtc == default ? DateTime.UtcNow : context.UploadSucceededUtc;
+                string fileName = avatarKey + "-" + timestamp.ToString("yyyyMMddHHmmss") + extension.ToLowerInvariant();
+                string destinationPath = Path.Combine(folderFullPath, fileName);
+                int suffix = 2;
+                while (File.Exists(destinationPath))
+                {
+                    fileName = avatarKey + "-" + timestamp.ToString("yyyyMMddHHmmss") + "-" + suffix + extension.ToLowerInvariant();
+                    destinationPath = Path.Combine(folderFullPath, fileName);
+                    suffix++;
+                }
+
+                File.Copy(sourcePath, destinationPath);
+                return NormalizePath(folderRelativePath + "/" + fileName);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[UnitGit] Could not save VRChat avatar upload thumbnail: " + ex.Message);
+                return string.Empty;
+            }
         }
 
         private static string BuildCommitBody(AvatarUploadContext context)
@@ -433,6 +523,40 @@ namespace Orbiters.UnitGit.Editor
             return string.IsNullOrWhiteSpace(path) ? string.Empty : path.Trim().Replace('\\', '/');
         }
 
+        private static string FirstExistingFilePath(params string[] paths)
+        {
+            if (paths == null)
+            {
+                return string.Empty;
+            }
+
+            string projectRoot = UnitGitService.GetUnityProjectRoot();
+            foreach (string path in paths)
+            {
+                string normalized = NormalizePath(path);
+                if (string.IsNullOrWhiteSpace(normalized))
+                {
+                    continue;
+                }
+
+                if (File.Exists(normalized))
+                {
+                    return normalized;
+                }
+
+                if (!string.IsNullOrWhiteSpace(projectRoot) && !Path.IsPathRooted(normalized))
+                {
+                    string projectPath = Path.Combine(projectRoot, normalized.Replace('/', Path.DirectorySeparatorChar));
+                    if (File.Exists(projectPath))
+                    {
+                        return NormalizePath(projectPath);
+                    }
+                }
+            }
+
+            return string.Empty;
+        }
+
         private static string FirstNonEmpty(params string[] values)
         {
             return values == null
@@ -468,8 +592,8 @@ namespace Orbiters.UnitGit.Editor
             public string SdkAvatarPackageVersion = string.Empty;
             public string SdkBasePackageVersion = string.Empty;
             public string BundlePath = string.Empty;
-            public string UploadFinishMessage = string.Empty;
-            public DateTime CapturedUtc;
+            public string ThumbnailSourcePath = string.Empty;
+            public string ThumbnailPath = string.Empty;
             public DateTime UploadStartedUtc;
             public DateTime UploadSucceededUtc;
             public bool UploadSucceeded;

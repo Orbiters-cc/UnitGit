@@ -154,22 +154,30 @@ namespace Orbiters.UnitGit.Editor
         private void CommitStaged()
         {
             string message = string.IsNullOrWhiteSpace(commitMessage) ? string.Empty : commitMessage.Trim();
+            bool amend = commitAmend;
             if (!ConfirmGitOperation(
-                    "Commit Staged Changes",
-                    "Commit",
-                    GitCommand("commit", "-m", message),
-                    "Create a commit from the staged changes.",
-                    string.Empty,
+                    amend ? "Amend Commit" : "Commit Staged Changes",
+                    amend ? "Amend" : "Commit",
+                    amend ? GitCommand("commit", "--amend", "-m", message) : GitCommand("commit", "-m", message),
+                    amend ? "Amend the previous commit with the staged changes." : "Create a commit from the staged changes.",
+                    amend ? HistoryRewriteWarning : string.Empty,
                     GetStagedChangeCount()))
             {
                 return;
             }
 
-            RunAction("commit", () => gitService.Commit(commitMessage));
-            if (snapshot != null && snapshot.HasRepository)
-            {
-                commitMessage = string.Empty;
-            }
+            RunAction(
+                amend ? "amend commit" : "commit",
+                () => amend ? gitService.CommitAmend(message) : gitService.Commit(message),
+                result =>
+                {
+                    if (result != null && result.Success)
+                    {
+                        commitMessage = string.Empty;
+                        commitMessageBeforeAmend = string.Empty;
+                        commitAmend = false;
+                    }
+                });
         }
 
     }
