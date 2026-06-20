@@ -181,4 +181,12 @@ namespace Orbiters.UnitGit.Editor
         GitHub,
         GitLab
     }
+
+    internal enum UnitGitResetMode
+    {
+        Soft,
+        Mixed,
+        Hard,
+        Keep
+    }
 }

@@ -343,6 +343,65 @@ namespace Orbiters.UnitGit.Editor.Tests
             }
         }
 
+        [Test]
+        public void ResetCurrentBranchSupportsSoftMixedHardAndKeep()
+        {
+            RequireGit();
+
+            string softRoot = CreateTempUnityProjectFolder();
+            try
+            {
+                UnitGitService service = CreateTwoCommitRepo(softRoot, out string first, out _, out string assetPath);
+                AssertGit(service.ResetCurrentBranch(first, UnitGitResetMode.Soft));
+                Assert.That(GetPorcelainStatus(service), Does.Contain("M  Assets/file.txt"));
+                Assert.That(File.ReadAllText(assetPath), Is.EqualTo("two\n"));
+            }
+            finally
+            {
+                DeleteTempFolder(softRoot);
+            }
+
+            string mixedRoot = CreateTempUnityProjectFolder();
+            try
+            {
+                UnitGitService service = CreateTwoCommitRepo(mixedRoot, out string first, out _, out string assetPath);
+                AssertGit(service.ResetCurrentBranch(first, UnitGitResetMode.Mixed));
+                Assert.That(GetPorcelainStatus(service), Does.Contain(" M Assets/file.txt"));
+                Assert.That(File.ReadAllText(assetPath), Is.EqualTo("two\n"));
+            }
+            finally
+            {
+                DeleteTempFolder(mixedRoot);
+            }
+
+            string hardRoot = CreateTempUnityProjectFolder();
+            try
+            {
+                UnitGitService service = CreateTwoCommitRepo(hardRoot, out string first, out _, out string assetPath);
+                AssertGit(service.ResetCurrentBranch(first, UnitGitResetMode.Hard));
+                Assert.That(GetPorcelainStatus(service).Trim(), Is.Empty);
+                Assert.That(File.ReadAllText(assetPath), Is.EqualTo("one\n"));
+            }
+            finally
+            {
+                DeleteTempFolder(hardRoot);
+            }
+
+            string keepRoot = CreateTempUnityProjectFolder();
+            try
+            {
+                UnitGitService service = CreateTwoCommitRepo(keepRoot, out string first, out _, out string assetPath);
+                File.WriteAllText(Path.Combine(keepRoot, "Assets", "local.txt"), "local\n");
+                AssertGit(service.ResetCurrentBranch(first, UnitGitResetMode.Keep));
+                Assert.That(GetPorcelainStatus(service), Does.Contain("?? Assets/local.txt"));
+                Assert.That(File.ReadAllText(assetPath), Is.EqualTo("one\n"));
+            }
+            finally
+            {
+                DeleteTempFolder(keepRoot);
+            }
+        }
+
         private static void RequireGit()
         {
             var service = new UnitGitService(Path.GetTempPath());
@@ -367,6 +426,32 @@ namespace Orbiters.UnitGit.Editor.Tests
             Directory.CreateDirectory(Path.Combine(root, "Packages"));
             File.WriteAllText(Path.Combine(root, "Packages", "manifest.json"), "{}\n");
             return root;
+        }
+
+        private static UnitGitService CreateTwoCommitRepo(string root, out string first, out string second, out string assetPath)
+        {
+            var service = new UnitGitService(root);
+            ConfigureTempRepository(service);
+
+            assetPath = Path.Combine(root, "Assets", "file.txt");
+            File.WriteAllText(assetPath, "one\n");
+            AssertGit(service.StageAll());
+            AssertGit(service.Commit("one"));
+            first = GetHead(service);
+
+            File.WriteAllText(assetPath, "two\n");
+            AssertGit(service.StageAll());
+            AssertGit(service.Commit("two"));
+            second = GetHead(service);
+
+            return service;
+        }
+
+        private static string GetPorcelainStatus(UnitGitService service)
+        {
+            GitCommandResult result = service.RunGit(30000, "status", "--porcelain=v1", "-uall");
+            AssertGit(result);
+            return result.StandardOutput;
         }
 
         private static void ConfigureTempRepository(UnitGitService service)

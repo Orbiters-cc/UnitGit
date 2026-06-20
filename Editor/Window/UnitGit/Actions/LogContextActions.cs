@@ -23,6 +23,7 @@ namespace Orbiters.UnitGit.Editor
 
             List<UnitGitCommit> selectedCommits = GetSelectedCommitsInLogOrder();
             menu.AddItem(new GUIContent("Rename Commit"), false, () => PromptRenameCommit(commit));
+            menu.AddItem(new GUIContent("Reset Current Branch to Here..."), false, () => PromptResetCurrentBranch(commit));
             if (selectedCommits.Count >= 2)
             {
                 menu.AddItem(new GUIContent("Squash Selected Commits"), false, PromptSquashSelectedCommits);
@@ -55,11 +56,13 @@ namespace Orbiters.UnitGit.Editor
             {
                 menu.AddSeparator(string.Empty);
                 menu.AddItem(new GUIContent("Rename Commit"), false, () => PromptRenameCommit(commit));
+                menu.AddItem(new GUIContent("Reset Current Branch to Here..."), false, () => PromptResetCurrentBranch(commit));
                 menu.AddItem(new GUIContent("Copy Hash"), false, () => CopyText("copy hash", commit.FullHash));
             }
             else
             {
                 menu.AddDisabledItem(new GUIContent("Rename Commit"));
+                menu.AddDisabledItem(new GUIContent("Reset Current Branch to Here..."));
                 menu.AddDisabledItem(new GUIContent("Copy Hash"));
             }
 
@@ -112,6 +115,26 @@ namespace Orbiters.UnitGit.Editor
                     string hash = commit.FullHash;
                     string message = newMessage;
                     RunAction("rename commit " + commit.ShortHash, () => gitService.RenameCommit(hash, message));
+                });
+        }
+
+        private void PromptResetCurrentBranch(UnitGitCommit commit)
+        {
+            if (commit == null || gitService == null)
+            {
+                return;
+            }
+
+            string branchName = snapshot != null ? snapshot.CurrentBranch : string.Empty;
+            UnitGitResetBranchPromptWindow.Open(
+                branchName,
+                gitService.ProjectRoot,
+                commit,
+                mode =>
+                {
+                    string hash = commit.FullHash;
+                    UnitGitResetMode resetMode = mode;
+                    RunAction("reset branch to " + commit.ShortHash, () => gitService.ResetCurrentBranch(hash, resetMode));
                 });
         }
 

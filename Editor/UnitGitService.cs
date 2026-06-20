@@ -306,6 +306,23 @@ namespace Orbiters.UnitGit.Editor
             return RewriteHeadHistory(commitHashes, message, true);
         }
 
+        internal GitCommandResult ResetCurrentBranch(string commitHash, UnitGitResetMode mode)
+        {
+            if (string.IsNullOrWhiteSpace(commitHash))
+            {
+                return Failure("Commit hash is required.");
+            }
+
+            GitCommandResult resolved = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", commitHash.Trim() + "^{commit}");
+            if (!resolved.Success)
+            {
+                return resolved;
+            }
+
+            string targetHash = FirstNonEmptyLine(resolved.StandardOutput);
+            return RunGit(LongTimeoutMilliseconds, "reset", GetResetModeArgument(mode), targetHash);
+        }
+
         public GitCommandResult ShelveAll(string message)
         {
             string shelfMessage = string.IsNullOrWhiteSpace(message)
@@ -313,6 +330,21 @@ namespace Orbiters.UnitGit.Editor
                 : message.Trim();
 
             return RunGit(LongTimeoutMilliseconds, "stash", "push", "-u", "-m", shelfMessage);
+        }
+
+        private static string GetResetModeArgument(UnitGitResetMode mode)
+        {
+            switch (mode)
+            {
+                case UnitGitResetMode.Soft:
+                    return "--soft";
+                case UnitGitResetMode.Hard:
+                    return "--hard";
+                case UnitGitResetMode.Keep:
+                    return "--keep";
+                default:
+                    return "--mixed";
+            }
         }
 
         private GitCommandResult RunCommitWithMessageFile(IEnumerable<string> baseArguments, string message)

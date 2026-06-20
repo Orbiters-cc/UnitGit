@@ -1498,3 +1498,55 @@
     justify-content: flex-end;
     align-items: center;
 }
+
+.unitgit-reset-prompt {
+    flex-grow: 1;
+    background-color: #303030;
+    padding: 16px;
+}
+
+.unitgit-reset-target {
+    color: #eef4ff;
+    -unity-font-style: bold;
+    white-space: nowrap;
+    overflow: hidden;
+    margin-bottom: 16px;
+}
+
+.unitgit-reset-body {
+    color: #dfe7f5;
+    white-space: normal;
+    margin-bottom: 12px;
+}
+
+.unitgit-reset-option {
+    margin-top: 4px;
+    margin-bottom: 8px;
+}
+
+.unitgit-reset-radio {
+    color: #eef4ff;
+    margin-bottom: 2px;
+}
+
+.unitgit-reset-radio Label {
+    color: #eef4ff;
+}
+
+.unitgit-reset-detail {
+    color: #8992a2;
+    white-space: normal;
+    margin-left: 24px;
+}
+
+.unitgit-reset-spacer {
+    flex-grow: 1;
+}
+
+.unitgit-reset-actions {
+    height: 34px;
+    min-height: 34px;
+    flex-direction: row;
+    justify-content: flex-end;
+    align-items: center;
+}
