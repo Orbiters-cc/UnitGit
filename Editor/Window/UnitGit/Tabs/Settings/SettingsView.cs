@@ -21,6 +21,8 @@ namespace Orbiters.UnitGit.Editor
 
             var panel = new VisualElement();
             panel.AddToClassList("unitgit-settings-panel");
+
+#if UNITGIT_VRCHAT_AVATARS
             panel.Add(BuildSectionHeader("Settings", "VRChat avatar uploads"));
 
             panel.Add(BuildSettingsToggle(
@@ -48,6 +50,10 @@ namespace Orbiters.UnitGit.Editor
                 : "Release rows require the avatar upload commit setting.");
             releaseDetail.AddToClassList("unitgit-settings-detail");
             panel.Add(releaseDetail);
+#else
+            panel.Add(BuildSectionHeader("Settings", "Project options"));
+            panel.Add(BuildEmptyState("No project settings available."));
+#endif
 
             root.Add(panel);
             return root;

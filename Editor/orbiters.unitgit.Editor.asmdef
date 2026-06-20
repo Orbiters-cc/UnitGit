@@ -12,5 +12,12 @@
   "overrideReferences": false,
   "precompiledReferences": [],
   "defineConstraints": [],
+  "versionDefines": [
+    {
+      "name": "com.vrchat.avatars",
+      "expression": "0.0.0",
+      "define": "UNITGIT_VRCHAT_AVATARS"
+    }
+  ],
   "optionalUnityReferences": []
 }
