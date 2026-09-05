@@ -26,7 +26,11 @@ namespace Orbiters.UnitGit.Editor
 
             var logDetailsSplit = BuildTrackedSplit(LogDetailsSplitPref, 1, 420f);
             logDetailsSplit.Add(BuildLogPane());
-            logDetailsSplit.Add(BuildDetailsPane());
+            commitDetailsRoot = new VisualElement();
+            commitDetailsRoot.style.flexGrow = 1;
+            commitDetailsRoot.style.minHeight = 0;
+            commitDetailsRoot.Add(BuildDetailsPane());
+            logDetailsSplit.Add(commitDetailsRoot);
 
             branchSplit.Add(logDetailsSplit);
             workspace.Add(branchSplit);
@@ -203,7 +207,7 @@ namespace Orbiters.UnitGit.Editor
         private void SetPrimarySelectedCommit(UnitGitCommit commit, string releaseId)
         {
             selectedCommit = commit;
-            selectedDetails = gitService != null && commit != null ? gitService.GetCommitDetails(commit.FullHash) : null;
+            selectedDetails = null;
             selectedReleaseId = string.IsNullOrWhiteSpace(releaseId) ? string.Empty : releaseId;
         }
 

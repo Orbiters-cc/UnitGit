@@ -173,9 +173,15 @@ namespace Orbiters.UnitGit.Editor
                 {
                     if (result != null && result.Success)
                     {
-                        commitMessage = string.Empty;
+                        if (commitMessage.Trim() == message)
+                            commitMessage = string.Empty;
                         commitMessageBeforeAmend = string.Empty;
                         commitAmend = false;
+                        contentRoot?.Q<TextField>(className: "unitgit-local-commit-message")?.SetValueWithoutNotify(commitMessage);
+                        contentRoot?.Q<Toggle>(className: "unitgit-local-amend-toggle")?.SetValueWithoutNotify(false);
+                        var submit = contentRoot?.Q<Button>("unitgit-commit-submit");
+                        if (submit != null)
+                            submit.text = "Commit Staged";
                     }
                 });
         }

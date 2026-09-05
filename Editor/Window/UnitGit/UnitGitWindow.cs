@@ -58,6 +58,7 @@ namespace Orbiters.UnitGit.Editor
         private VisualElement contentRoot;
         private VisualElement localChangesListRoot;
         private VisualElement localDiffPaneRoot;
+        private VisualElement commitDetailsRoot;
         private UnitGitTab activeTab = UnitGitTab.Log;
         private string branchSearch = string.Empty;
         private string logSearch = string.Empty;
@@ -103,6 +104,12 @@ namespace Orbiters.UnitGit.Editor
 
         private void OnDisable()
         {
+            refreshRequestId++;
+            diffRead.Dispose();
+            detailsRead.Dispose();
+            promptRead.Dispose();
+            if (diffFont != null)
+                DestroyImmediate(diffFont);
             EditorApplication.projectChanged -= QueueRefreshFromEditorEvent;
             EditorApplication.focusChanged -= OnEditorFocusChanged;
             EditorSceneManager.sceneSaved -= OnSceneSaved;
@@ -115,6 +122,9 @@ namespace Orbiters.UnitGit.Editor
 
         private void ResetTransientAsyncState()
         {
+            refreshRequestId++;
+            requestedDiffPath = null;
+            requestedSelection = null;
             busy = false;
             refreshQueued = false;
             refreshingSnapshot = false;

@@ -23,10 +23,7 @@ namespace Orbiters.UnitGit.Editor
             public string Name;
             public string FullPath;
 
-            public int FileCount
-            {
-                get { return Files.Count + Folders.Values.Sum(folder => folder.FileCount); }
-            }
+            public int FileCount { get; private set; }
 
             public static ChangedFileTreeNode CreateRoot()
             {
@@ -50,10 +47,12 @@ namespace Orbiters.UnitGit.Editor
                 if (parts.Length <= 1)
                 {
                     Files.Add(normalized);
+                    FileCount++;
                     return;
                 }
 
                 ChangedFileTreeNode current = this;
+                current.FileCount++;
                 for (int i = 0; i < parts.Length - 1; i++)
                 {
                     string folderName = parts[i];
@@ -71,6 +70,7 @@ namespace Orbiters.UnitGit.Editor
                     }
 
                     current = child;
+                    current.FileCount++;
                 }
 
                 current.Files.Add(normalized);

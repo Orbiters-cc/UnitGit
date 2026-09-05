@@ -52,8 +52,7 @@ namespace Orbiters.UnitGit.Editor
             actions.Add(BuildActionButton("Shelve", string.Empty, ShelveAll));
             pane.Add(actions);
 
-            var list = new ScrollView();
-            list.name = "unitgit-local-changes-list";
+            var list = new VisualElement();
             list.AddToClassList("unitgit-changes-list");
             localChangesListRoot = list;
             if (snapshot.Changes.Count == 0)
@@ -86,7 +85,9 @@ namespace Orbiters.UnitGit.Editor
             message.AddToClassList("unitgit-local-commit-message");
             message.RegisterValueChangedCallback(evt => commitMessage = evt.newValue);
             commitPanel.Add(message);
-            commitPanel.Add(BuildActionButton(commitAmend ? "Amend Commit" : "Commit Staged", "unitgit-button--primary", CommitStaged));
+            var submit = BuildActionButton(commitAmend ? "Amend Commit" : "Commit Staged", "unitgit-button--primary", CommitStaged);
+            submit.name = "unitgit-commit-submit";
+            commitPanel.Add(submit);
             pane.Add(commitPanel);
 
             return pane;
@@ -102,19 +103,15 @@ namespace Orbiters.UnitGit.Editor
             if (value)
             {
                 commitMessageBeforeAmend = commitMessage;
-                GitCommandResult result = gitService != null ? gitService.GetHeadCommitMessage() : null;
-                if (result == null || !result.Success)
+                if (snapshot == null || !snapshot.HasCommits)
                 {
-                    string message = result != null && !string.IsNullOrWhiteSpace(result.Message)
-                        ? result.Message
-                        : "Could not read the previous commit message.";
-                    EditorUtility.DisplayDialog("Amend Commit", message, "OK");
+                    EditorUtility.DisplayDialog("Amend Commit", "No previous commit is available.", "OK");
                     commitAmend = false;
                     RebuildContent();
                     return;
                 }
 
-                commitMessage = result.StandardOutput;
+                commitMessage = snapshot.HeadMessage;
                 commitAmend = true;
             }
             else
@@ -129,35 +126,16 @@ namespace Orbiters.UnitGit.Editor
 
         private void AddChangedFileGroups(VisualElement parent)
         {
-            var changes = snapshot.Changes
-                .OrderBy(change => change.Path, StringComparer.OrdinalIgnoreCase)
-                .GroupBy(change => GetTopFolder(change.Path))
-                .OrderBy(group => string.Equals(group.Key, "root", StringComparison.OrdinalIgnoreCase) ? string.Empty : group.Key, StringComparer.OrdinalIgnoreCase);
-
-            foreach (IGrouping<string, UnitGitStatusEntry> group in changes)
+            var rows = snapshot.ChangeList.GetVisibleRows(row =>
+                GetFoldoutExpanded(GetFoldoutPrefKey("ChangesFolder", row.Path), true));
+            parent.Add(BuildVirtualList(rows, 28f, row =>
             {
-                bool isRoot = string.Equals(group.Key, "root", StringComparison.OrdinalIgnoreCase);
-                if (!isRoot)
-                {
-                    string prefKey = GetFoldoutPrefKey("ChangesFolder", group.Key);
-                    bool expanded = GetFoldoutExpanded(prefKey, true);
-                    parent.Add(BuildFoldoutButton(
-                        group.Key,
-                        group.Count() + " files",
-                        expanded,
-                        () => ToggleFoldout(prefKey, true),
-                        "unitgit-change-folder"));
-                    if (!expanded)
-                    {
-                        continue;
-                    }
-                }
-
-                foreach (UnitGitStatusEntry change in group)
-                {
-                    parent.Add(BuildChangeFileRow(change, !isRoot));
-                }
-            }
+                if (!row.IsFolder)
+                    return BuildChangeFileRow(row.Change, row.Depth > 0);
+                string prefKey = GetFoldoutPrefKey("ChangesFolder", row.Path);
+                return BuildFoldoutButton(row.Name, row.FileCount + " files",
+                    GetFoldoutExpanded(prefKey, true), () => ToggleFoldout(prefKey, true), "unitgit-change-folder");
+            }, "unitgit-local-changes-list"));
         }
 
         private VisualElement BuildChangeFileRow(UnitGitStatusEntry change, bool indented)
@@ -167,6 +145,12 @@ namespace Orbiters.UnitGit.Editor
                 SelectLocalChange(change);
             });
             row.userData = change.Path;
+            row.tooltip = change.Path;
+            row.RegisterCallback<MouseDownEvent>(evt =>
+            {
+                if (evt.button == 0)
+                    SelectLocalChange(change);
+            });
             row.AddToClassList("unitgit-change-file-row");
             if (indented)
             {
@@ -202,7 +186,11 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
+            if (string.Equals(selectedChangePath, change.Path, StringComparison.Ordinal))
+                return;
+
             selectedChangePath = change.Path;
+            diffSearchMatchIndex = 0;
             UpdateLocalChangeSelectionState();
             RebuildLocalDiffPane();
         }

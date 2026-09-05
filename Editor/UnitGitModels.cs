@@ -44,8 +44,11 @@ namespace Orbiters.UnitGit.Editor
         public string LastError = string.Empty;
         public List<UnitGitBranch> Branches = new List<UnitGitBranch>();
         public List<UnitGitStatusEntry> Changes = new List<UnitGitStatusEntry>();
+        public UnitGitFileList ChangeList = new UnitGitFileList();
         public List<UnitGitCommit> Commits = new List<UnitGitCommit>();
         public UnitGitReleaseFile Releases = new UnitGitReleaseFile();
+        public List<string> Shelves = new List<string>();
+        public string HeadMessage = string.Empty;
     }
 
     internal sealed class UnitGitBranch
@@ -158,6 +161,7 @@ namespace Orbiters.UnitGit.Editor
         public string RightTitle = "Current version";
         public List<UnitGitDiffLine> Lines = new List<UnitGitDiffLine>();
         public int DifferenceCount;
+        public int MaxLineLength;
     }
 
     internal sealed class UnitGitDiffLine

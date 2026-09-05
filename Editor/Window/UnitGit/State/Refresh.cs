@@ -49,7 +49,8 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            if (EditorApplication.timeSinceStartup < queuedRefreshTime)
+            if (EditorApplication.isCompiling || EditorApplication.isUpdating ||
+                EditorApplication.timeSinceStartup < queuedRefreshTime)
             {
                 return;
             }
@@ -111,6 +112,11 @@ namespace Orbiters.UnitGit.Editor
             }
 
             RememberScrollOffsets();
+            if (busy)
+            {
+                refreshAgainRequested = true;
+                return;
+            }
             if (refreshingSnapshot)
             {
                 if (!editorUpdatePumpActive && pendingMainThreadActions.IsEmpty)
@@ -135,14 +141,14 @@ namespace Orbiters.UnitGit.Editor
             int requestId = ++refreshRequestId;
             string projectRoot = gitService.ProjectRoot;
             string search = logSearch;
-            string selectedCommitHash = selectedCommit != null ? selectedCommit.FullHash : string.Empty;
+            UnitGitSnapshot previousSnapshot = snapshot;
             try
             {
                 EnsureEditorUpdatePump();
                 Task.Run(() => BuildSnapshotRefreshResult(
                         projectRoot,
                         search,
-                        selectedCommitHash,
+                        previousSnapshot,
                         line =>
                         {
                             if (ShouldLogRefreshProcessLine(line))
@@ -163,7 +169,7 @@ namespace Orbiters.UnitGit.Editor
         private static SnapshotRefreshResult BuildSnapshotRefreshResult(
             string projectRoot,
             string search,
-            string selectedCommitHash,
+            UnitGitSnapshot previousSnapshot,
             UnitGitProcessLogHandler logHandler)
         {
             var service = new UnitGitService(projectRoot);
@@ -171,15 +177,13 @@ namespace Orbiters.UnitGit.Editor
             UnitGitSnapshot nextSnapshot = service.BuildSnapshot(search);
             var result = new SnapshotRefreshResult
             {
-                Snapshot = nextSnapshot
+                Snapshot = nextSnapshot,
+                ChangesUnchanged = previousSnapshot != null &&
+                    previousSnapshot.Changes.Count == nextSnapshot.Changes.Count &&
+                    previousSnapshot.Changes.Zip(nextSnapshot.Changes, (a, b) =>
+                        a.Path == b.Path && a.OriginalPath == b.OriginalPath &&
+                        a.IndexStatus == b.IndexStatus && a.WorkTreeStatus == b.WorkTreeStatus).All(equal => equal)
             };
-
-            if (nextSnapshot.HasRepository && nextSnapshot.Commits.Count > 0)
-            {
-                UnitGitCommit commit = nextSnapshot.Commits.FirstOrDefault(item => item.FullHash == selectedCommitHash)
-                    ?? nextSnapshot.Commits[0];
-                result.SelectedDetails = service.GetCommitDetails(commit.FullHash);
-            }
 
             return result;
         }
@@ -205,11 +209,38 @@ namespace Orbiters.UnitGit.Editor
             else if (task.Result != null && task.Result.Snapshot != null)
             {
                 snapshot = task.Result.Snapshot;
-                ReconcileSnapshotSelection(task.Result);
+                ReconcileSnapshotSelection();
             }
 
-            BuildShell();
-            RebuildContent();
+            bool preserveLocalView = activeTab == UnitGitTab.LocalChanges && localChangesListRoot != null &&
+                task.Status == TaskStatus.RanToCompletion && snapshot.HasRepository && snapshot.HasCommits &&
+                string.IsNullOrWhiteSpace(snapshot.LastError);
+            if (preserveLocalView)
+            {
+                if (!task.Result.ChangesUnchanged)
+                {
+                    localChangesListRoot.Clear();
+                    if (snapshot.Changes.Count == 0)
+                        localChangesListRoot.Add(BuildEmptyState("Working tree is clean."));
+                    else if (GetFoldoutExpanded(ChangesFoldPref, true))
+                        AddChangedFileGroups(localChangesListRoot);
+                    var count = contentRoot.Q<Label>(className: "unitgit-foldout-detail");
+                    if (count != null)
+                        count.text = snapshot.Changes.Count + " files";
+                }
+                var change = GetSelectedChange();
+                bool changedPath = requestedDiffPath != (change != null ? change.Path : string.Empty);
+                RequestLocalDiff(change);
+                if (changedPath)
+                    RebuildLocalDiffPane();
+                RefreshTopBar();
+            }
+            else
+            {
+                requestedDiffPath = null;
+                BuildShell();
+                RebuildContent();
+            }
             RestoreScrollOffsets();
 
             if (refreshAgainRequested)
@@ -219,7 +250,7 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
-        private void ReconcileSnapshotSelection(SnapshotRefreshResult result)
+        private void ReconcileSnapshotSelection()
         {
             if (snapshot.Branches.Count > 0 &&
                 (selectedBranch == null || snapshot.Branches.All(branch => branch.FullRef != selectedBranch.FullRef)))
@@ -240,7 +271,8 @@ namespace Orbiters.UnitGit.Editor
 
             if (snapshot.HasRepository && snapshot.Commits.Count > 0)
             {
-                selectedCommitHashes.RemoveWhere(hash => snapshot.Commits.All(commit => commit.FullHash != hash));
+                var availableHashes = new HashSet<string>(snapshot.Commits.Select(commit => commit.FullHash), StringComparer.Ordinal);
+                selectedCommitHashes.RemoveWhere(hash => !availableHashes.Contains(hash));
                 if (!string.IsNullOrWhiteSpace(selectionAnchorHash) &&
                     snapshot.Commits.All(commit => commit.FullHash != selectionAnchorHash))
                 {
@@ -261,14 +293,7 @@ namespace Orbiters.UnitGit.Editor
                     selectionAnchorHash = selectedCommit.FullHash;
                 }
 
-                if (result.SelectedDetails != null &&
-                    result.SelectedDetails.Commit != null &&
-                    selectedCommit != null &&
-                    result.SelectedDetails.Commit.FullHash == selectedCommit.FullHash)
-                {
-                    selectedDetails = result.SelectedDetails;
-                }
-                else if (selectedDetails == null ||
+                if (selectedDetails == null ||
                          selectedDetails.Commit == null ||
                          selectedCommit == null ||
                          selectedDetails.Commit.FullHash != selectedCommit.FullHash)
@@ -289,7 +314,7 @@ namespace Orbiters.UnitGit.Editor
         private sealed class SnapshotRefreshResult
         {
             public UnitGitSnapshot Snapshot;
-            public UnitGitCommitDetails SelectedDetails;
+            public bool ChangesUnchanged;
         }
     }
 }

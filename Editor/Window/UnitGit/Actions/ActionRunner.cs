@@ -14,6 +14,30 @@ namespace Orbiters.UnitGit.Editor
 {
     internal sealed partial class UnitGitWindow
     {
+        private readonly UnitGitLatestRequest<GitCommandResult> promptRead = new UnitGitLatestRequest<GitCommandResult>();
+        private Action<GitCommandResult> promptReadComplete;
+
+        private void ReadForPrompt(Func<GitCommandResult> read, Action<GitCommandResult> complete)
+        {
+            promptReadComplete = complete;
+            promptRead.Request(stale => ExecuteGitAction(read));
+            EnsureEditorUpdatePump();
+        }
+
+        private void PollPromptRead()
+        {
+            if (!promptRead.Poll(out GitCommandResult result, out Exception error))
+                return;
+            var complete = promptReadComplete;
+            promptReadComplete = null;
+            if (error != null || result == null || !result.Success)
+            {
+                EditorUtility.DisplayDialog("Unit Git", error?.Message ?? result?.Message ?? "Could not read Git state.", "OK");
+                return;
+            }
+            complete?.Invoke(result);
+        }
+
         private void RunAction(string label, Func<GitCommandResult> action, Action<GitCommandResult> onComplete = null)
         {
             if (busy)
@@ -23,8 +47,7 @@ namespace Orbiters.UnitGit.Editor
 
             busy = true;
             AppendConsole(label, "started");
-            BuildShell();
-            RebuildContent();
+            RefreshTopBar();
             EnsureEditorUpdatePump();
 
             Task.Run(() =>

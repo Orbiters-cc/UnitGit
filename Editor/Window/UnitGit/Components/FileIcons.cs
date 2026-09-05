@@ -93,16 +93,9 @@ namespace Orbiters.UnitGit.Editor
 
         private Texture2D GetProjectFileIcon(string path)
         {
-            if (!string.IsNullOrWhiteSpace(path))
-            {
-                var cached = AssetDatabase.GetCachedIcon(path.Replace('\\', '/')) as Texture2D;
-                if (cached != null)
-                {
-                    return cached;
-                }
-            }
-
             string extension = Path.GetExtension(path ?? string.Empty).ToLowerInvariant();
+            if (fileTypeIcons.TryGetValue(extension, out Texture2D cached))
+                return cached;
             string iconName;
             switch (extension)
             {
@@ -146,11 +139,15 @@ namespace Orbiters.UnitGit.Editor
                     break;
             }
 
-            return (EditorGUIUtility.IconContent(iconName).image as Texture2D)
+            var texture = (EditorGUIUtility.IconContent(iconName).image as Texture2D)
                    ?? EditorGUIUtility.FindTexture(iconName)
                    ?? (EditorGUIUtility.IconContent("DefaultAsset Icon").image as Texture2D)
                    ?? EditorGUIUtility.FindTexture("DefaultAsset Icon");
+            fileTypeIcons[extension] = texture;
+            return texture;
         }
+
+        private readonly Dictionary<string, Texture2D> fileTypeIcons = new Dictionary<string, Texture2D>();
 
         private static string Shorten(string value, int maxLength)
         {

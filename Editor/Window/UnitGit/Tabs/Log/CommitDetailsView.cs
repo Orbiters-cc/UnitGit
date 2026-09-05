@@ -18,6 +18,7 @@ namespace Orbiters.UnitGit.Editor
         {
             var pane = new VisualElement();
             pane.AddToClassList("unitgit-details-pane");
+            EnsureCommitDetailsLoaded();
 
             UnitGitReleaseEntry selectedRelease = GetSelectedRelease();
             if (selectedRelease != null)
@@ -46,7 +47,7 @@ namespace Orbiters.UnitGit.Editor
 
         private VisualElement BuildChangedFilesTree()
         {
-            List<string> changedFiles = GetSelectedChangedFiles();
+            List<string> changedFiles = loadedSelection != null ? loadedSelection.Files : new List<string>();
             int selectedCount = GetSelectedCommitsInLogOrder().Count;
             var panel = new VisualElement();
             panel.AddToClassList("unitgit-files-panel");
@@ -56,113 +57,52 @@ namespace Orbiters.UnitGit.Editor
                     ? changedFiles.Count + " files" + (selectedCount > 1 ? " across " + selectedCount + " commits" : string.Empty)
                     : "No commit selected"));
 
-            var scroll = new ScrollView();
-            scroll.name = "unitgit-changed-files-scroll";
+            var scroll = new VisualElement();
             scroll.AddToClassList("unitgit-files-scroll");
 
             if (changedFiles.Count == 0)
             {
-                scroll.Add(BuildEmptyState("Select a commit to inspect changed files."));
+                scroll.Add(BuildEmptyState(detailsRead.IsBusy ? "Loading changed files..." : "No changed files."));
             }
             else
             {
-                AddChangedFileTree(scroll, changedFiles);
+                var rows = loadedSelection.FileList.GetVisibleRows(row =>
+                    GetFoldoutExpanded(GetFoldoutPrefKey("ChangedFilesFolder", row.Path), true));
+                scroll.Add(BuildVirtualList(rows, 28f, BuildCommitFileRow, "unitgit-changed-files-scroll"));
             }
 
             panel.Add(scroll);
             return panel;
         }
 
-        private List<string> GetSelectedChangedFiles()
-        {
-            var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (UnitGitCommitDetails details in GetSelectedDetailsInLogOrder())
-            {
-                if (details == null || details.ChangedFiles == null)
-                {
-                    continue;
-                }
 
-                foreach (string file in details.ChangedFiles)
-                {
-                    if (!string.IsNullOrWhiteSpace(file))
-                    {
-                        files.Add(file.Trim());
-                    }
-                }
-            }
-
-            return files.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList();
-        }
-
-        private List<UnitGitCommitDetails> GetSelectedDetailsInLogOrder()
-        {
-            var details = new List<UnitGitCommitDetails>();
-            foreach (UnitGitCommit commit in GetSelectedCommitsInLogOrder())
-            {
-                UnitGitCommitDetails commitDetails = GetDetailsForCommit(commit);
-                if (commitDetails != null)
-                {
-                    details.Add(commitDetails);
-                }
-            }
-
-            return details;
-        }
-
-        private UnitGitCommitDetails GetDetailsForCommit(UnitGitCommit commit)
-        {
-            if (commit == null || gitService == null)
-            {
-                return null;
-            }
-
-            if (selectedDetails != null &&
-                selectedDetails.Commit != null &&
-                string.Equals(selectedDetails.Commit.FullHash, commit.FullHash, StringComparison.Ordinal))
-            {
-                return selectedDetails;
-            }
-
-            return gitService.GetCommitDetails(commit.FullHash);
-        }
-
-        private void AddChangedFileTree(VisualElement parent, IEnumerable<string> files)
-        {
-            var root = ChangedFileTreeNode.CreateRoot();
-            foreach (string file in files.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
-            {
-                root.AddFile(file);
-            }
-
-            AddChangedFileTreeNode(parent, root, 0);
-        }
-
-        private void AddChangedFileTreeNode(VisualElement parent, ChangedFileTreeNode node, int depth)
+        private static void AddChangedFileTreeNode(UnitGitFileList rows, ChangedFileTreeNode node, int depth)
         {
             foreach (ChangedFileTreeNode folder in node.Folders.Values)
             {
-                string prefKey = GetFoldoutPrefKey("ChangedFilesFolder", folder.FullPath);
-                bool expanded = GetFoldoutExpanded(prefKey, true);
-                var folderButton = BuildFoldoutButton(
-                    folder.Name,
-                    folder.FileCount + " files",
-                    expanded,
-                    () => ToggleFoldout(prefKey, true),
-                    "unitgit-file-folder");
-                folderButton.style.marginLeft = 8f + depth * 18f;
-                parent.Add(folderButton);
-
-                if (expanded)
+                rows.Add(new UnitGitFileRow
                 {
-                    AddChangedFileTreeNode(parent, folder, depth + 1);
-                }
+                    IsFolder = true, Name = folder.Name, Path = folder.FullPath,
+                    FileCount = folder.FileCount, Depth = depth
+                });
+                AddChangedFileTreeNode(rows, folder, depth + 1);
             }
 
-            foreach (string file in node.Files.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+            foreach (string file in node.Files)
             {
-                parent.Add(BuildChangedFileButton(file, depth));
+                rows.Add(new UnitGitFileRow { Path = file, Depth = depth });
             }
+        }
+
+        private VisualElement BuildCommitFileRow(UnitGitFileRow row)
+        {
+            if (!row.IsFolder)
+                return BuildChangedFileButton(row.Path, row.Depth);
+            string prefKey = GetFoldoutPrefKey("ChangedFilesFolder", row.Path);
+            var button = BuildFoldoutButton(row.Name, row.FileCount + " files",
+                GetFoldoutExpanded(prefKey, true), () => ToggleFoldout(prefKey, true), "unitgit-file-folder");
+            button.style.marginLeft = 8f + row.Depth * 18f;
+            return button;
         }
 
         private VisualElement BuildChangedFileButton(string file, int depth)
@@ -194,7 +134,7 @@ namespace Orbiters.UnitGit.Editor
 
             if (selectedDetails == null || selectedDetails.Commit == null)
             {
-                card.Add(BuildEmptyState("No commit selected."));
+                card.Add(BuildEmptyState(detailsRead.IsBusy ? "Loading commit..." : "No commit selected."));
                 return card;
             }
 
@@ -233,18 +173,105 @@ namespace Orbiters.UnitGit.Editor
             subject.AddToClassList("unitgit-details-title");
             card.Add(subject);
 
-            foreach (UnitGitCommit commit in commits)
+            var list = BuildVirtualList(commits, 44f, commit =>
             {
-                var hash = new Label(commit.ShortHash + "  " + commit.AuthorName);
+                var row = new VisualElement();
+                var hash = new Label(commit.FullHash + "  " + commit.AuthorName);
                 hash.AddToClassList("unitgit-details-hash");
-                card.Add(hash);
+                row.Add(hash);
 
                 var title = new Label(commit.Subject);
                 title.AddToClassList("unitgit-details-muted");
-                card.Add(title);
-            }
+                row.Add(title);
+                row.tooltip = commit.FullHash + "\n" + commit.AuthorName + " <" + commit.AuthorEmail + ">\n" + commit.Subject;
+                return row;
+            }, "unitgit-selected-commits-scroll");
+            list.style.height = 180;
+            list.style.flexBasis = 180;
+            card.Add(list);
 
             return card;
+        }
+
+        private readonly UnitGitLatestRequest<SelectionDetails> detailsRead = new UnitGitLatestRequest<SelectionDetails>();
+        private readonly Dictionary<string, UnitGitCommitDetails> detailsCache = new Dictionary<string, UnitGitCommitDetails>();
+        private SelectionDetails loadedSelection;
+        private string requestedSelection;
+
+        private sealed class SelectionDetails
+        {
+            public readonly List<UnitGitCommitDetails> Details = new List<UnitGitCommitDetails>();
+            public List<string> Files;
+            public readonly UnitGitFileList FileList = new UnitGitFileList();
+        }
+
+        private void EnsureCommitDetailsLoaded()
+        {
+            var commits = GetSelectedCommitsInLogOrder();
+            if (commits.Count == 0 && selectedCommit != null)
+                commits.Add(selectedCommit);
+            string key = string.Join(";", commits.Select(commit => commit.FullHash));
+            if (key == requestedSelection)
+            {
+                selectedDetails = loadedSelection?.Details.FirstOrDefault(item => item.Commit.FullHash == selectedCommit?.FullHash);
+                return;
+            }
+            requestedSelection = key;
+            loadedSelection = null;
+            selectedDetails = null;
+            string root = gitService.ProjectRoot;
+            detailsRead.Request(stale =>
+            {
+                var result = new SelectionDetails();
+                var files = new HashSet<string>(StringComparer.Ordinal);
+                var service = new UnitGitService(root) { ReadSuperseded = stale };
+                foreach (var commit in commits)
+                {
+                    if (stale())
+                        return null;
+                    if (!detailsCache.TryGetValue(commit.FullHash, out var details))
+                    {
+                        details = service.GetCommitDetails(commit.FullHash);
+                        if (stale())
+                            return null;
+                        if (details != null && details.ChangedFiles.Count <= 10000)
+                        {
+                            if (detailsCache.Count >= 64 || detailsCache.Values.Sum(item => item.ChangedFiles.Count) > 50000)
+                                detailsCache.Clear();
+                            detailsCache[commit.FullHash] = details;
+                        }
+                    }
+                    if (details == null)
+                        continue;
+                    result.Details.Add(details);
+                    foreach (string file in details.ChangedFiles)
+                        files.Add(file);
+                }
+                result.Files = files.OrderBy(file => file, StringComparer.OrdinalIgnoreCase).ToList();
+                var tree = ChangedFileTreeNode.CreateRoot();
+                foreach (string file in result.Files)
+                    tree.AddFile(file);
+                AddChangedFileTreeNode(result.FileList, tree, 0);
+                return result;
+            });
+            EnsureEditorUpdatePump();
+        }
+
+        private void PollCommitDetails()
+        {
+            if (!detailsRead.Poll(out SelectionDetails result, out Exception error))
+                return;
+            loadedSelection = result;
+            if (error != null)
+                AppendConsole("commit details", error.Message);
+            selectedDetails = result?.Details.FirstOrDefault(item => item.Commit.FullHash == selectedCommit?.FullHash);
+            if (activeTab == UnitGitTab.Log && commitDetailsRoot != null)
+            {
+                RememberScrollOffsets();
+                commitDetailsRoot.Clear();
+                commitDetailsRoot.Add(BuildDetailsPane());
+                RestoreScrollOffsets();
+            }
         }
     }
 }

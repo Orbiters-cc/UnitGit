@@ -20,7 +20,7 @@ namespace Orbiters.UnitGit.Editor
             rootVisualElement.AddToClassList("unitgit-root");
 
             var styleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(StyleSheetPath);
-            if (styleSheet != null)
+            if (styleSheet != null && !rootVisualElement.styleSheets.Contains(styleSheet))
             {
                 rootVisualElement.styleSheets.Add(styleSheet);
             }
@@ -56,6 +56,14 @@ namespace Orbiters.UnitGit.Editor
             topBar.Add(status);
 
             return topBar;
+        }
+
+        private void RefreshTopBar()
+        {
+            var bar = rootVisualElement.Q(className: "unitgit-topbar");
+            if (bar != null)
+                bar.RemoveFromHierarchy();
+            rootVisualElement.Insert(0, BuildTopBar());
         }
 
         private Button BuildTabButton(UnitGitTab tab, string text)
@@ -135,6 +143,7 @@ namespace Orbiters.UnitGit.Editor
 
             localChangesListRoot = null;
             localDiffPaneRoot = null;
+            commitDetailsRoot = null;
             contentRoot.Clear();
 
             if (snapshot == null)

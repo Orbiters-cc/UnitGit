@@ -44,6 +44,7 @@ namespace Orbiters.UnitGit.Editor
         public string ProjectRoot { get; private set; }
 
         public UnitGitProcessLogHandler ProcessLogReceived { get; set; }
+        public Func<bool> ReadSuperseded { get; set; }
 
         public UnitGitSnapshot BuildSnapshot(string logSearch)
         {
@@ -83,11 +84,18 @@ namespace Orbiters.UnitGit.Editor
 
             snapshot.HasCommits = HasCommits();
             ParseStatus(status.StandardOutput, snapshot);
+            snapshot.ChangeList = UnitGitFileList.FromChanges(snapshot.Changes);
             snapshot.Branches = GetBranches();
             snapshot.Releases = UnitGitReleases.Load(ProjectRoot);
             if (snapshot.HasCommits)
             {
                 snapshot.Commits = GetCommits(logSearch);
+                var message = GetHeadCommitMessage();
+                if (message.Success)
+                    snapshot.HeadMessage = message.StandardOutput;
+                var shelves = RunGit(DefaultTimeoutMilliseconds, "stash", "list");
+                if (shelves.Success)
+                    snapshot.Shelves = ParseStashList(shelves.StandardOutput);
             }
 
             return snapshot;
@@ -773,12 +781,12 @@ namespace Orbiters.UnitGit.Editor
 
         public GitCommandResult RunGit(int timeoutMilliseconds, params string[] arguments)
         {
-            return RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, ProcessLogReceived, arguments);
+            return RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, ProcessLogReceived, null, ReadSuperseded, arguments);
         }
 
         private GitCommandResult RunGitWithEnvironment(IDictionary<string, string> environment, int timeoutMilliseconds, params string[] arguments)
         {
-            return RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, ProcessLogReceived, environment, arguments);
+            return RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, ProcessLogReceived, environment, null, arguments);
         }
 
         public bool IsGitAvailable()
@@ -1585,7 +1593,7 @@ namespace Orbiters.UnitGit.Editor
             UnitGitProcessLogHandler logHandler,
             params string[] arguments)
         {
-            return RunProcess(fileName, timeoutMessage, workingDirectory, timeoutMilliseconds, logHandler, null, arguments);
+            return RunProcess(fileName, timeoutMessage, workingDirectory, timeoutMilliseconds, logHandler, null, null, arguments);
         }
 
         private static GitCommandResult RunProcess(
@@ -1595,8 +1603,11 @@ namespace Orbiters.UnitGit.Editor
             int timeoutMilliseconds,
             UnitGitProcessLogHandler logHandler,
             IDictionary<string, string> environment,
+            Func<bool> superseded,
             params string[] arguments)
         {
+            if (superseded != null && superseded())
+                return Failure("Read superseded.");
             var result = new GitCommandResult();
             var output = new StringBuilder();
             var error = new StringBuilder();
@@ -1653,18 +1664,38 @@ namespace Orbiters.UnitGit.Editor
                     process.BeginOutputReadLine();
                     process.BeginErrorReadLine();
 
-                    if (!process.WaitForExit(timeoutMilliseconds))
+                    var elapsed = Stopwatch.StartNew();
+                    bool exited;
+                    bool cancelled = false;
+                    if (superseded == null)
+                        exited = process.WaitForExit(timeoutMilliseconds);
+                    else
                     {
-                        result.TimedOut = true;
+                        while (!(exited = process.WaitForExit(50)))
+                        {
+                            cancelled = superseded();
+                            if (cancelled || elapsed.ElapsedMilliseconds >= timeoutMilliseconds)
+                                break;
+                        }
+                    }
+                    if (!exited)
+                    {
+                        result.TimedOut = !cancelled;
                         result.ExitCode = 1;
-                        logHandler?.Invoke("timed out after " + (timeoutMilliseconds / 1000f).ToString("0.#") + " seconds");
+                        if (cancelled)
+                            error.AppendLine("Read superseded.");
+                        else
+                            logHandler?.Invoke("timed out after " + (timeoutMilliseconds / 1000f).ToString("0.#") + " seconds");
                         try
                         {
                             process.Kill();
+                            process.WaitForExit(1000);
                         }
                         catch
                         {
                         }
+                        if (cancelled)
+                            return Failure("Read superseded.");
                     }
                     else
                     {

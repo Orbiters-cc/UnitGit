@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using UnityEditor;
@@ -81,13 +82,13 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            GitCommandResult messageResult = gitService.GetCommitMessage(commit.FullHash);
-            if (!messageResult.Success)
-            {
-                EditorUtility.DisplayDialog("Rename Commit", messageResult.Message, "OK");
-                return;
-            }
+            string root = gitService.ProjectRoot;
+            ReadForPrompt(() => new UnitGitService(root).GetCommitMessage(commit.FullHash),
+                result => OpenRenameCommitPrompt(commit, result));
+        }
 
+        private void OpenRenameCommitPrompt(UnitGitCommit commit, GitCommandResult messageResult)
+        {
             UnitGitCommitMessagePromptWindow.Open(
                 "Rename Commit",
                 commit.ShortHash + "  " + commit.AuthorName,
@@ -101,20 +102,23 @@ namespace Orbiters.UnitGit.Editor
                         return;
                     }
 
-                    if (!ConfirmGitOperation(
-                            "Rename Commit",
-                            "Rewrite",
-                            "rewrite commit " + commit.ShortHash + "\nupdate HEAD",
-                            "Rename commit " + commit.ShortHash + ".",
-                            HistoryRewriteWarning,
-                            GetChangedFileCountForCommits(new[] { commit })))
+                    ReadChangedFileCount(new[] { commit }, fileCount =>
                     {
-                        return;
-                    }
+                        if (!ConfirmGitOperation(
+                                "Rename Commit",
+                                "Rewrite",
+                                "rewrite commit " + commit.ShortHash + "\nupdate HEAD",
+                                "Rename commit " + commit.ShortHash + ".",
+                                HistoryRewriteWarning,
+                                fileCount))
+                        {
+                            return;
+                        }
 
-                    string hash = commit.FullHash;
-                    string message = newMessage;
-                    RunAction("rename commit " + commit.ShortHash, () => gitService.RenameCommit(hash, message));
+                        string hash = commit.FullHash;
+                        string message = newMessage;
+                        RunAction("rename commit " + commit.ShortHash, () => gitService.RenameCommit(hash, message));
+                    });
                 });
         }
 
@@ -166,20 +170,23 @@ namespace Orbiters.UnitGit.Editor
                         return;
                     }
 
-                    if (!ConfirmGitOperation(
-                            "Squash Commits",
-                            "Rewrite",
-                            "rewrite selected commits\nupdate HEAD",
-                            "Squash " + commits.Count + " selected commits into one commit.",
-                            HistoryRewriteWarning,
-                            GetChangedFileCountForCommits(commits)))
+                    ReadChangedFileCount(commits, fileCount =>
                     {
-                        return;
-                    }
+                        if (!ConfirmGitOperation(
+                                "Squash Commits",
+                                "Rewrite",
+                                "rewrite selected commits\nupdate HEAD",
+                                "Squash " + commits.Count + " selected commits into one commit.",
+                                HistoryRewriteWarning,
+                                fileCount))
+                        {
+                            return;
+                        }
 
-                    string[] hashes = commits.Select(commit => commit.FullHash).ToArray();
-                    string message = newMessage;
-                    RunAction("squash " + commits.Count + " commits", () => gitService.SquashCommits(hashes, message));
+                        string[] hashes = commits.Select(commit => commit.FullHash).ToArray();
+                        string message = newMessage;
+                        RunAction("squash " + commits.Count + " commits", () => gitService.SquashCommits(hashes, message));
+                    });
                 });
         }
 
@@ -244,13 +251,19 @@ namespace Orbiters.UnitGit.Editor
             return builder.ToString().TrimEnd();
         }
 
-        private int GetChangedFileCountForCommits(IEnumerable<UnitGitCommit> commits)
+        private void ReadChangedFileCount(IEnumerable<UnitGitCommit> commits, Action<int> complete)
+        {
+            string root = gitService.ProjectRoot;
+            var selected = commits.ToArray();
+            ReadForPrompt(() => new GitCommandResult
+            {
+                StandardOutput = GetChangedFileCountForCommits(new UnitGitService(root), selected).ToString(CultureInfo.InvariantCulture)
+            }, result => complete(int.Parse(result.StandardOutput, CultureInfo.InvariantCulture)));
+        }
+
+        private static int GetChangedFileCountForCommits(UnitGitService service, IEnumerable<UnitGitCommit> commits)
         {
             var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (gitService == null)
-            {
-                return 0;
-            }
 
             foreach (UnitGitCommit commit in commits)
             {
@@ -259,7 +272,7 @@ namespace Orbiters.UnitGit.Editor
                     continue;
                 }
 
-                UnitGitCommitDetails details = gitService.GetCommitDetails(commit.FullHash);
+                UnitGitCommitDetails details = service.GetCommitDetails(commit.FullHash);
                 if (details == null || details.ChangedFiles == null)
                 {
                     continue;

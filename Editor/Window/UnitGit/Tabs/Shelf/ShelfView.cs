@@ -85,13 +85,7 @@ namespace Orbiters.UnitGit.Editor
 
         private List<string> GetShelves()
         {
-            var result = gitService.RunGit(30000, "stash", "list");
-            if (!result.Success || string.IsNullOrWhiteSpace(result.StandardOutput))
-            {
-                return new List<string>();
-            }
-
-            return UnitGitService.ParseStashList(result.StandardOutput);
+            return snapshot != null ? snapshot.Shelves : new List<string>();
         }
 
         private static string ExtractShelfRef(string shelf)

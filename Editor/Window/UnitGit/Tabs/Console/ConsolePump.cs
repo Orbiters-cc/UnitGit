@@ -29,6 +29,8 @@ namespace Orbiters.UnitGit.Editor
         private void QueueConsoleLine(string label, string message)
         {
             pendingConsoleLines.Enqueue(FormatConsoleLine(label, SanitizeConsoleMessage(message)));
+            while (pendingConsoleLines.Count > MaxConsoleLines * 2)
+                pendingConsoleLines.TryDequeue(out _);
         }
 
         private void QueueMainThreadAction(Action action)
@@ -52,9 +54,15 @@ namespace Orbiters.UnitGit.Editor
 
         private void DrainEditorQueues()
         {
+            PollDiffRead();
+            PollCommitDetails();
+            PollPromptRead();
+            var budget = System.Diagnostics.Stopwatch.StartNew();
             while (pendingMainThreadActions.TryDequeue(out Action action))
             {
                 action();
+                if (budget.ElapsedMilliseconds >= 4)
+                    break;
             }
 
             bool changed = false;
@@ -62,9 +70,11 @@ namespace Orbiters.UnitGit.Editor
             {
                 AddConsoleLine(line);
                 changed = true;
+                if (budget.ElapsedMilliseconds >= 4)
+                    break;
             }
 
-            if (!busy && !refreshingSnapshot && pendingConsoleLines.IsEmpty && pendingMainThreadActions.IsEmpty)
+            if (!busy && !refreshingSnapshot && !diffRead.IsBusy && !detailsRead.IsBusy && !promptRead.IsBusy && pendingConsoleLines.IsEmpty && pendingMainThreadActions.IsEmpty)
             {
                 editorUpdatePumpActive = false;
                 EditorApplication.update -= DrainEditorQueues;
