@@ -431,48 +431,62 @@ namespace Orbiters.UnitGit.Editor
                 return precondition;
             }
 
-            var addArgs = new List<string> { "add", "--" };
-            addArgs.AddRange(paths);
-            GitCommandResult stage = RunWithIndexLockRetry(() => service.RunGit(UnitGitService.LongTimeoutMilliseconds, addArgs.ToArray()));
-            if (!stage.Success && IsIndexLockFailure(stage) && TryRemoveStaleIndexLock(service.ProjectRoot))
+            try
             {
-                stage = RunWithIndexLockRetry(() => service.RunGit(UnitGitService.LongTimeoutMilliseconds, addArgs.ToArray()));
+                using var index = new UnitGitScopedIndex(service);
+                paths = index.FilterIgnored(paths);
+                if (paths.Length == 0) return Fail("All requested checkpoint files are ignored by Git.");
+                var addArgs = new List<string> { "add", "--" };
+                addArgs.AddRange(paths);
+                GitCommandResult stage = index.Run(addArgs.ToArray());
+
+                if (!stage.Success)
+                {
+                    return Fail("Staging files failed: " + stage.Message);
+                }
+
+                var commitArgs = new List<string> { "commit", "-m", commitTitle.Trim() };
+                if (!string.IsNullOrWhiteSpace(trailingParagraph))
+                {
+                    commitArgs.Add("-m");
+                    commitArgs.Add(trailingParagraph.Trim());
+                }
+
+                commitArgs.Add("--");
+                commitArgs.AddRange(paths);
+                GitCommandResult commit = index.Run(commitArgs.ToArray());
+                if (!commit.Success)
+                {
+                    return Fail("Commit failed: " + commit.Message);
+                }
+                var result = new UnitGitReleaseResult
+                {
+                    Success = true,
+                    Message = commit.Message
+                };
+
+                // HEAD has advanced. An index-install failure must not roll back the
+                // release file or report the already-created checkpoint as missing.
+                try { index.Complete(); }
+                catch (IOException ex)
+                {
+                    result.Message += "\n" + ex.Message;
+                    Debug.LogWarning("[Unit Git] " + ex.Message);
+                }
+
+                GitCommandResult head = service.RunGit(10000, "rev-parse", "HEAD");
+                if (head.Success)
+                {
+                    result.CommitHash = head.StandardOutput.Trim();
+                }
+
+                RaiseChangedExternally();
+                return result;
             }
-
-            if (!stage.Success)
+            catch (Exception ex)
             {
-                return Fail("Staging files failed: " + stage.Message);
+                return Fail("Checkpoint failed: " + ex.Message);
             }
-
-            var commitArgs = new List<string> { "commit", "-m", commitTitle.Trim() };
-            if (!string.IsNullOrWhiteSpace(trailingParagraph))
-            {
-                commitArgs.Add("-m");
-                commitArgs.Add(trailingParagraph.Trim());
-            }
-
-            commitArgs.Add("--");
-            commitArgs.AddRange(paths);
-            GitCommandResult commit = RunWithIndexLockRetry(() => service.RunGit(UnitGitService.LongTimeoutMilliseconds, commitArgs.ToArray()));
-            if (!commit.Success)
-            {
-                return Fail("Commit failed: " + commit.Message);
-            }
-
-            var result = new UnitGitReleaseResult
-            {
-                Success = true,
-                Message = commit.Message
-            };
-
-            GitCommandResult head = service.RunGit(10000, "rev-parse", "HEAD");
-            if (head.Success)
-            {
-                result.CommitHash = head.StandardOutput.Trim();
-            }
-
-            RaiseChangedExternally();
-            return result;
         }
 
         internal static void NotifyChangedExternally()

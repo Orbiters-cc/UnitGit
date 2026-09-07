@@ -128,6 +128,63 @@ namespace Orbiters.UnitGit.Editor.Tests
         }
 
         [Test]
+        public void ScopedReleaseSkipsIgnoredPackagesAndPreservesUnrelatedStaging()
+        {
+            RequireGit();
+            string root = CreateTempUnityProjectFolder();
+            try
+            {
+                var service = new UnitGitService(root);
+                ConfigureTempRepository(service);
+                File.WriteAllText(Path.Combine(root, ".gitignore"), "*.unitypackage\n*.unitypackage.meta\n");
+                File.WriteAllText(Path.Combine(root, "Assets", "other.txt"), "base");
+                AssertGit(service.StageAll()); AssertGit(service.Commit("initial"));
+                File.WriteAllText(Path.Combine(root, "Assets", "other.txt"), "staged");
+                AssertGit(service.StageAll());
+                File.WriteAllText(Path.Combine(root, "Assets", "other.txt"), "unstaged");
+                File.WriteAllText(Path.Combine(root, "Assets", "version.json"), "version");
+                File.WriteAllText(Path.Combine(root, "Assets", "logic.unitypackage"), "generated");
+                File.WriteAllText(Path.Combine(root, "Assets", "logic.unitypackage.meta"), "generated meta");
+                string before = service.RunGit(30000, "diff", "--cached", "--binary").StandardOutput;
+                var result = UnitGitReleases.PublishRelease(new UnitGitReleaseEntry { id = "scoped-test", tool = "MCB", version = "1.0.0" },
+                    "release test", service, "Assets/version.json", "Assets/logic.unitypackage", "Assets/logic.unitypackage.meta");
+                Assert.That(result.Success, Is.True, result.Message);
+                Assert.That(service.RunGit(30000, "diff", "--cached", "--binary").StandardOutput, Is.EqualTo(before));
+                Assert.That(service.RunGit(30000, "show", "HEAD:Assets/other.txt").StandardOutput.TrimEnd('\r', '\n'), Is.EqualTo("base"));
+                Assert.That(File.ReadAllText(Path.Combine(root, "Assets", "other.txt")), Is.EqualTo("unstaged"));
+                Assert.That(service.RunGit(30000, "ls-tree", "-r", "HEAD").StandardOutput, Does.Not.Contain("unitypackage"));
+                Assert.That(service.RunGit(30000, "show", "HEAD:Assets/version.json").StandardOutput.TrimEnd('\r', '\n'), Is.EqualTo("version"));
+            }
+            finally { DeleteTempFolder(root); }
+        }
+
+        [Test]
+        public void FailedScopedReleaseLeavesEveryIndexEntryUnchanged()
+        {
+            RequireGit();
+            string root = CreateTempUnityProjectFolder();
+            try
+            {
+                var service = new UnitGitService(root); ConfigureTempRepository(service);
+                File.WriteAllText(Path.Combine(root, "Assets", "body.txt"), "base");
+                AssertGit(service.StageAll()); AssertGit(service.Commit("initial"));
+                File.WriteAllText(Path.Combine(root, "Assets", "body.txt"), "staged");
+                AssertGit(service.StageAll());
+                File.WriteAllText(Path.Combine(root, "Assets", "body.txt"), "unstaged");
+                string before = service.RunGit(30000, "ls-files", "--stage", "-z").StandardOutput;
+                string head = GetHead(service);
+                var result = UnitGitReleases.PublishRelease(new UnitGitReleaseEntry { id = "failure-test" }, "release test",
+                    service, "Assets/body.txt", "Assets/missing.txt");
+                Assert.That(result.Success, Is.False);
+                Assert.That(service.RunGit(30000, "ls-files", "--stage", "-z").StandardOutput, Is.EqualTo(before));
+                Assert.That(GetHead(service), Is.EqualTo(head));
+                Assert.That(File.ReadAllText(Path.Combine(root, "Assets", "body.txt")), Is.EqualTo("unstaged"));
+                Assert.That(File.Exists(UnitGitReleases.GetReleasesFilePath(root)), Is.False);
+            }
+            finally { DeleteTempFolder(root); }
+        }
+
+        [Test]
         public void PublishReleaseAllStagesProjectChangesAndReleaseTrailer()
         {
             RequireGit();
