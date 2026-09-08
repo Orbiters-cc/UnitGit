@@ -184,6 +184,76 @@ namespace Orbiters.UnitGit.Editor.Tests
             finally { DeleteTempFolder(root); }
         }
 
+        [TestCase(true)]
+        [TestCase(false)]
+        public void FailedFullCheckpointPreservesStagedUnstagedAndUntrackedFiles(bool release)
+        {
+            RequireGit();
+            string root = CreateTempUnityProjectFolder();
+            try
+            {
+                var service = new UnitGitService(root);
+                ConfigureTempRepository(service);
+                string tracked = Path.Combine(root, "Assets", "body.txt");
+                string releasePath = UnitGitReleases.GetReleasesFilePath(root);
+                File.WriteAllText(tracked, "base");
+                File.WriteAllText(releasePath, "{\"releases\":[]}");
+                AssertGit(service.StageAll()); AssertGit(service.Commit("initial"));
+                File.WriteAllText(tracked, "staged");
+                File.WriteAllText(releasePath, "{\"releases\":[]}\n");
+                AssertGit(service.StageAll());
+                File.WriteAllText(tracked, "unstaged");
+                File.WriteAllText(releasePath, "{\"releases\":[]}\n\n");
+                File.WriteAllText(Path.Combine(root, "Assets", "new.txt"), "untracked");
+                string before = GetPorcelainStatus(service);
+                string entries = service.RunGit(30000, "ls-files", "--stage", "-z").StandardOutput;
+                string contents = File.ReadAllText(releasePath);
+                string head = GetHead(service);
+                AssertGit(service.RunGit(10000, "config", "commit.gpgsign", "true"));
+                AssertGit(service.RunGit(10000, "config", "gpg.format", "openpgp"));
+                AssertGit(service.RunGit(10000, "config", "gpg.program", Path.Combine(root, "missing-gpg.exe")));
+                var result = release
+                    ? UnitGitReleases.PublishReleaseAll(new UnitGitReleaseEntry { id = "failed-checkpoint" }, "checkpoint", service, false)
+                    : UnitGitReleases.CommitAll("checkpoint", "paragraph", service, false);
+                Assert.That(result.Success, Is.False);
+                Assert.That(result.Message, Does.Contain("Commit failed"));
+                Assert.That(GetHead(service), Is.EqualTo(head));
+                Assert.That(GetPorcelainStatus(service), Is.EqualTo(before));
+                Assert.That(service.RunGit(30000, "ls-files", "--stage", "-z").StandardOutput, Is.EqualTo(entries));
+                Assert.That(File.ReadAllText(tracked), Is.EqualTo("unstaged"));
+                Assert.That(File.ReadAllText(releasePath), Is.EqualTo(contents));
+                Assert.That(Directory.GetFiles(Path.Combine(root, ".git"), "index.unitgit-*").Length, Is.Zero);
+            }
+            finally { DeleteTempFolder(root); }
+        }
+
+        [TestCase(true)]
+        [TestCase(false)]
+        public void FullCheckpointRespectsExistingIndexLock(bool release)
+        {
+            RequireGit();
+            string root = CreateTempUnityProjectFolder();
+            try
+            {
+                var service = new UnitGitService(root); ConfigureTempRepository(service);
+                AssertGit(service.StageAll()); AssertGit(service.Commit("initial"));
+                string head = GetHead(service);
+                string indexPath = Path.Combine(root, ".git", "index");
+                byte[] index = File.ReadAllBytes(indexPath);
+                string lockPath = indexPath + ".lock";
+                File.WriteAllText(lockPath, "other process reservation");
+                var result = release
+                    ? UnitGitReleases.PublishReleaseAll(new UnitGitReleaseEntry { id = "locked" }, "checkpoint", service, false)
+                    : UnitGitReleases.CommitAll("checkpoint", null, service, false);
+                Assert.That(result.Success, Is.False);
+                Assert.That(GetHead(service), Is.EqualTo(head));
+                Assert.That(File.ReadAllBytes(indexPath), Is.EqualTo(index));
+                Assert.That(File.ReadAllText(lockPath), Is.EqualTo("other process reservation"));
+                Assert.That(File.Exists(UnitGitReleases.GetReleasesFilePath(root)), Is.False);
+            }
+            finally { DeleteTempFolder(root); }
+        }
+
         [Test]
         public void PublishReleaseAllStagesProjectChangesAndReleaseTrailer()
         {

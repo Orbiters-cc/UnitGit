@@ -612,41 +612,33 @@ namespace Orbiters.UnitGit.Editor
 
         private static UnitGitReleaseResult StageAllAndCommit(UnitGitService service, string title, string trailingParagraph, bool notifyChangedExternally = true)
         {
-            GitCommandResult stage = RunWithIndexLockRetry(() => service.StageAll());
-            if (!stage.Success && IsIndexLockFailure(stage) && TryRemoveStaleIndexLock(service.ProjectRoot))
+            try
             {
-                stage = RunWithIndexLockRetry(() => service.StageAll());
+                using var index = new UnitGitScopedIndex(service);
+                GitCommandResult stage = index.Run("add", "-A");
+                if (!stage.Success) return Fail("Staging changes failed: " + stage.Message);
+
+                GitCommandResult commit = index.Commit(title, trailingParagraph);
+                if (!commit.Success) return Fail("Commit failed: " + commit.Message);
+
+                var result = new UnitGitReleaseResult { Success = true, Message = commit.Message };
+                // The commit exists even if installing the completed index fails.
+                // Keep the release file and the private index available for recovery.
+                try { index.Complete(); }
+                catch (IOException ex)
+                {
+                    result.Message += "\n" + ex.Message;
+                    Debug.LogWarning("[Unit Git] " + ex.Message);
+                }
+                GitCommandResult head = service.RunGit(10000, "rev-parse", "HEAD");
+                if (head.Success) result.CommitHash = head.StandardOutput.Trim();
+                if (notifyChangedExternally) RaiseChangedExternally();
+                return result;
             }
-
-            if (!stage.Success)
+            catch (Exception ex)
             {
-                return Fail("Staging changes failed: " + stage.Message);
+                return Fail("Checkpoint failed: " + ex.Message);
             }
-
-            GitCommandResult commit = RunWithIndexLockRetry(() => service.Commit(title, trailingParagraph));
-            if (!commit.Success)
-            {
-                return Fail("Commit failed: " + commit.Message);
-            }
-
-            var result = new UnitGitReleaseResult
-            {
-                Success = true,
-                Message = commit.Message
-            };
-
-            GitCommandResult head = service.RunGit(10000, "rev-parse", "HEAD");
-            if (head.Success)
-            {
-                result.CommitHash = head.StandardOutput.Trim();
-            }
-
-            if (notifyChangedExternally)
-            {
-                RaiseChangedExternally();
-            }
-
-            return result;
         }
 
         internal static string BuildDefaultCommitTitle(UnitGitReleaseEntry entry)

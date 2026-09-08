@@ -17,6 +17,8 @@ namespace Orbiters.UnitGit.Editor
         private string indexedDiffSearch;
         private UnitGitDiff indexedDiff;
         private Label diffCountLabel;
+        private Label diffLeftTitle;
+        private Label diffRightTitle;
         private Font diffFont;
         private float diffCharacterWidth;
         private float diffColumnWidth;
@@ -60,6 +62,8 @@ namespace Orbiters.UnitGit.Editor
             pathRow.Add(new Label(change != null ? path : "No file selected"));
             pane.Add(pathRow);
             diffList = null;
+            diffLeftTitle = null;
+            diffRightTitle = null;
             if (loadedDiff == null)
             {
                 pane.Add(BuildEmptyState("Loading diff..."));
@@ -67,9 +71,10 @@ namespace Orbiters.UnitGit.Editor
             }
             var header = new VisualElement();
             header.AddToClassList("unitgit-diff-header");
-            foreach (string title in new[] { loadedDiff.LeftTitle, loadedDiff.RightTitle })
+            diffLeftTitle = new Label(loadedDiff.LeftTitle);
+            diffRightTitle = new Label(loadedDiff.RightTitle);
+            foreach (var label in new[] { diffLeftTitle, diffRightTitle })
             {
-                var label = new Label(title);
                 label.AddToClassList("unitgit-diff-header-cell");
                 header.Add(label);
             }
@@ -187,6 +192,10 @@ namespace Orbiters.UnitGit.Editor
             if (error != null)
                 loadedDiff.Lines.Add(new UnitGitDiffLine { Right = "Could not load diff: " + error.Message });
             indexedDiff = null;
+            if (diffLeftTitle != null)
+                diffLeftTitle.text = loadedDiff.LeftTitle;
+            if (diffRightTitle != null)
+                diffRightTitle.text = loadedDiff.RightTitle;
             if (activeTab == UnitGitTab.LocalChanges)
             {
                 if (diffList != null && diffList.panel != null)

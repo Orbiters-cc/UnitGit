@@ -42,6 +42,10 @@ namespace Orbiters.UnitGit.Editor
         internal GitCommandResult Run(params string[] arguments) =>
             service.RunGitWithEnvironment(environment, UnitGitService.LongTimeoutMilliseconds, arguments);
 
+        internal GitCommandResult Commit(string title, string trailingParagraph) =>
+            service.RunCommitWithMessageFile(new[] { "commit" }, string.IsNullOrWhiteSpace(trailingParagraph)
+                ? title : title.Trim() + "\n\n" + trailingParagraph.Trim(), environment);
+
         internal string[] FilterIgnored(string[] paths)
         {
             var args = new List<string> { "-c", "core.quotepath=false", "check-ignore", "--" };

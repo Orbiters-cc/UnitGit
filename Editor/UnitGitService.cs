@@ -355,13 +355,16 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
-        private GitCommandResult RunCommitWithMessageFile(IEnumerable<string> baseArguments, string message)
+        internal GitCommandResult RunCommitWithMessageFile(IEnumerable<string> baseArguments, string message,
+            IDictionary<string, string> environment = null)
         {
             string messagePath = WriteTempCommitMessage(message);
             try
             {
                 var args = new List<string>(baseArguments) { "-F", messagePath };
-                return RunGit(LongTimeoutMilliseconds, args.ToArray());
+                return environment == null
+                    ? RunGit(LongTimeoutMilliseconds, args.ToArray())
+                    : RunGitWithEnvironment(environment, LongTimeoutMilliseconds, args.ToArray());
             }
             finally
             {
