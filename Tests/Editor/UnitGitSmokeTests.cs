@@ -8,6 +8,43 @@ namespace Orbiters.UnitGit.Editor.Tests
     public sealed class UnitGitSmokeTests
     {
         [Test]
+        public void UnicodeFilesPreviewAndRenameWithQuotedGitPaths()
+        {
+            RequireGit();
+            string root = CreateTempFolder();
+            try
+            {
+                var service = new UnitGitService(root);
+                AssertGit(service.RunGit(30000, "init"));
+                AssertGit(service.RunGit(30000, "config", "user.email", "unitgit@example.test"));
+                AssertGit(service.RunGit(30000, "config", "user.name", "Unit Git Tests"));
+                AssertGit(service.RunGit(30000, "config", "core.quotePath", "true"));
+                AssertGit(service.RunGit(30000, "config", "commit.gpgsign", "false"));
+                const string original = "caf\u00e9.txt";
+                const string renamed = "\u670d\U0001F43E.txt";
+                File.WriteAllText(Path.Combine(root, original), "visible content\n");
+                var status = service.RunGit(30000, "status", "--porcelain=v1", "-b", "-uall");
+                AssertGit(status);
+                var change = UnitGitService.ParseStatusOutput(status.StandardOutput).Changes.Single();
+                Assert.That(change.Path, Is.EqualTo(original));
+                Assert.That(service.GetFileDiff(change).Lines.Any(line => line.Right == "visible content"), Is.True);
+                AssertGit(service.StageAll());
+                AssertGit(service.Commit("initial"));
+                AssertGit(service.RunGit(30000, "mv", "--", original, renamed));
+                status = service.RunGit(30000, "status", "--porcelain=v1", "-b", "-uall");
+                AssertGit(status);
+                change = UnitGitService.ParseStatusOutput(status.StandardOutput).Changes.Single();
+                Assert.That(change.Path, Is.EqualTo(renamed));
+                Assert.That(change.OriginalPath, Is.EqualTo(original));
+                File.AppendAllText(Path.Combine(root, renamed), "modified content\n");
+                status = service.RunGit(30000, "status", "--porcelain=v1", "-b", "-uall");
+                change = UnitGitService.ParseStatusOutput(status.StandardOutput).Changes.Single();
+                Assert.That(service.GetFileDiff(change).Lines.Any(line => line.Right == "modified content"), Is.True);
+            }
+            finally { DeleteTempFolder(root); }
+        }
+
+        [Test]
         public void TempRepoStagesCommitsShowsMixedDiffAndStashes()
         {
             RequireGit();

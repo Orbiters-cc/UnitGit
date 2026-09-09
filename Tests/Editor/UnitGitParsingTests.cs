@@ -8,6 +8,22 @@ namespace Orbiters.UnitGit.Editor.Tests
     public sealed class UnitGitParsingTests
     {
         [Test]
+        public void QuotedStatusPathsDecodeUtf8AndPreserveFilenameCharacters()
+        {
+            var snapshot = UnitGitService.ParseStatusOutput(
+                "?? \"caf\\303\\251.txt\"\n" +
+                "??   leading space.txt\n" +
+                "?? literal -> arrow.txt\n" +
+                "R  \"old -> caf\\303\\251.txt\" -> \"new\\tname.txt\"\n");
+            Assert.That(snapshot.Changes.Select(change => change.Path), Is.EqualTo(new[]
+            { "caf\u00e9.txt", "  leading space.txt", "literal -> arrow.txt", "new\tname.txt" }));
+            Assert.That(snapshot.Changes[2].OriginalPath, Is.Empty);
+            Assert.That(snapshot.Changes[3].OriginalPath, Is.EqualTo("old -> caf\u00e9.txt"));
+            Assert.That(UnitGitService.UnquotePath("\"\\346\\234\\215\\360\\237\\220\\276\\\\\\\".txt\""),
+                Is.EqualTo("\u670d\U0001F43E\\\".txt"));
+        }
+
+        [Test]
         public void ParseStatusPreservesBranchTrackingRenamesAndMixedStates()
         {
             string output =

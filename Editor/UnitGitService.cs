@@ -1200,7 +1200,9 @@ namespace Orbiters.UnitGit.Editor
 
                 string path = line.Substring(3);
                 string originalPath = string.Empty;
-                int renameIndex = path.IndexOf(" -> ", StringComparison.Ordinal);
+                int renameIndex = line[0] == 'R' || line[0] == 'C' || line[1] == 'R' || line[1] == 'C'
+                    ? FindRenameSeparator(path)
+                    : -1;
                 if (renameIndex >= 0)
                 {
                     originalPath = UnquotePath(path.Substring(0, renameIndex));
@@ -1255,19 +1257,67 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
+        private static int FindRenameSeparator(string path)
+        {
+            bool quoted = false;
+            for (int i = 0; i < path.Length; i++)
+            {
+                if (quoted && path[i] == '\\') { i++; continue; }
+                if (path[i] == '"') quoted = !quoted;
+                if (!quoted && i + 4 <= path.Length && path.Substring(i, 4) == " -> ")
+                    return i;
+            }
+            return -1;
+        }
+
         internal static string UnquotePath(string path)
         {
-            if (string.IsNullOrWhiteSpace(path))
+            if (string.IsNullOrEmpty(path))
             {
                 return string.Empty;
             }
 
-            path = path.Trim();
             if (path.Length >= 2 && path[0] == '"' && path[path.Length - 1] == '"')
             {
-                path = path.Substring(1, path.Length - 2)
-                    .Replace("\\\"", "\"")
-                    .Replace("\\\\", "\\");
+                var decoded = new StringBuilder();
+                for (int i = 1; i < path.Length - 1; i++)
+                {
+                    if (path[i] != '\\') { decoded.Append(path[i]); continue; }
+                    i++;
+                    if (path[i] >= '0' && path[i] <= '7')
+                    {
+                        // Git quotes UTF-8 bytes as octal escapes, not Unicode code points.
+                        var bytes = new List<byte>();
+                        while (true)
+                        {
+                            int value = 0;
+                            int digits = 0;
+                            while (i < path.Length - 1 && digits < 3 && path[i] >= '0' && path[i] <= '7')
+                            { value = value * 8 + path[i++] - '0'; digits++; }
+                            bytes.Add((byte)value);
+                            if (i + 1 >= path.Length - 1 || path[i] != '\\' || path[i + 1] < '0' || path[i + 1] > '7')
+                                break;
+                            i++;
+                        }
+                        decoded.Append(Encoding.UTF8.GetString(bytes.ToArray()));
+                        i--;
+                    }
+                    else
+                    {
+                        switch (path[i])
+                        {
+                            case 'a': decoded.Append('\a'); break;
+                            case 'b': decoded.Append('\b'); break;
+                            case 't': decoded.Append('\t'); break;
+                            case 'n': decoded.Append('\n'); break;
+                            case 'v': decoded.Append('\v'); break;
+                            case 'f': decoded.Append('\f'); break;
+                            case 'r': decoded.Append('\r'); break;
+                            default: decoded.Append(path[i]); break;
+                        }
+                    }
+                }
+                return decoded.ToString();
             }
 
             return path;
