@@ -1,7 +1,7 @@
 {
   "name": "orbiters.unitgit",
   "displayName": "Unit Git",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "LicenseRef-Orbiters-Proprietary",
   "unity": "2022.3",
   "description": "Unity editor Git wrapper for VRChat Unity projects.",

@@ -403,7 +403,22 @@ namespace Orbiters.UnitGit.Editor
             return CommitFiles(new UnitGitService(), commitTitle, trailingParagraph, projectRelativePaths);
         }
 
-        private static UnitGitReleaseResult CommitFiles(UnitGitService service, string commitTitle, string trailingParagraph, params string[] projectRelativePaths)
+        /// <summary>Explicit project root for integrations running Git off the Unity main thread.</summary>
+        public static async System.Threading.Tasks.Task<UnitGitReleaseResult> CommitProjectFilesAsync(string projectRoot, string commitTitle, params string[] projectRelativePaths)
+        {
+            string root = Path.GetFullPath(projectRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            foreach (string path in projectRelativePaths ?? Array.Empty<string>())
+            {
+                if (string.IsNullOrWhiteSpace(path) || Path.IsPathRooted(path) ||
+                    !Path.GetFullPath(Path.Combine(root, path)).StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    return Fail("Checkpoint paths must stay inside the Unity project.");
+            }
+            var result = await System.Threading.Tasks.Task.Run(() => CommitFiles(new UnitGitService(root), commitTitle, null, projectRelativePaths, false, true));
+            if (result.Success) RaiseChangedExternally();
+            return result;
+        }
+
+        private static UnitGitReleaseResult CommitFiles(UnitGitService service, string commitTitle, string trailingParagraph, string[] projectRelativePaths, bool notify = true, bool requireAll = false)
         {
             if (string.IsNullOrWhiteSpace(commitTitle))
             {
@@ -434,7 +449,10 @@ namespace Orbiters.UnitGit.Editor
             try
             {
                 using var index = new UnitGitScopedIndex(service);
-                paths = index.FilterIgnored(paths);
+                var included = index.FilterIgnored(paths);
+                if (requireAll && included.Length != paths.Length)
+                    return Fail("Some checkpoint files are ignored by Git: " + string.Join(", ", paths.Except(included).Take(3)) + ". Update the project's ignore rules before saving.");
+                paths = included;
                 if (paths.Length == 0) return Fail("All requested checkpoint files are ignored by Git.");
                 var addArgs = new List<string> { "add", "--" };
                 addArgs.AddRange(paths);
@@ -480,7 +498,7 @@ namespace Orbiters.UnitGit.Editor
                     result.CommitHash = head.StandardOutput.Trim();
                 }
 
-                RaiseChangedExternally();
+                if (notify) RaiseChangedExternally();
                 return result;
             }
             catch (Exception ex)
