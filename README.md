@@ -33,3 +33,10 @@ Unity.exe -batchmode -nographics -projectPath "<project>" -executeMethod Orbiter
 ## Git
 
 This folder is initialized as its own Git repository so it can be versioned independently from the main Unity project.
+
+## Releases and VPM
+
+Version changes pushed to `master` run **Build Release**. Published releases are
+imported through the signed release webhook into the shared Orbiters VPM feed at
+<https://orbiters.cc/vpm/orbiters/index.json>, alongside My Avatar and Toolkit.
+This package does not build a separate GitHub Pages listing.
