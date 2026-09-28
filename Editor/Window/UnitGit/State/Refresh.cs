@@ -70,6 +70,7 @@ namespace Orbiters.UnitGit.Editor
         private void QueueLogSearchRefresh()
         {
             logPage = 0;
+            historyLimit = CommitPageSize * 3;
             queuedLogSearchRefreshTime = EditorApplication.timeSinceStartup + LogSearchRefreshDelaySeconds;
             if (logSearchRefreshQueued)
             {
@@ -141,6 +142,7 @@ namespace Orbiters.UnitGit.Editor
             int requestId = ++refreshRequestId;
             string projectRoot = gitService.ProjectRoot;
             string search = logSearch;
+            int requestedHistoryLimit = historyLimit;
             UnitGitSnapshot previousSnapshot = snapshot;
             try
             {
@@ -155,7 +157,7 @@ namespace Orbiters.UnitGit.Editor
                             {
                                 QueueConsoleLine("refresh", line);
                             }
-                        }))
+                        }, requestedHistoryLimit, () => requestId != refreshRequestId || logSearchDraft != search))
                     .ContinueWith(task => QueueMainThreadAction(() => ApplySnapshotRefresh(requestId, task)));
             }
             catch (Exception ex)
@@ -170,14 +172,17 @@ namespace Orbiters.UnitGit.Editor
             string projectRoot,
             string search,
             UnitGitSnapshot previousSnapshot,
-            UnitGitProcessLogHandler logHandler)
+            UnitGitProcessLogHandler logHandler, int historyLimit = 300, Func<bool> superseded = null)
         {
             var service = new UnitGitService(projectRoot);
             service.ProcessLogReceived = logHandler;
-            UnitGitSnapshot nextSnapshot = service.BuildSnapshot(search);
+            bool wasSuperseded = false;
+            service.ReadSuperseded = () => wasSuperseded = wasSuperseded || (superseded?.Invoke() ?? false);
+            UnitGitSnapshot nextSnapshot = service.BuildSnapshot(search, historyLimit);
             var result = new SnapshotRefreshResult
             {
                 Snapshot = nextSnapshot,
+                Superseded = wasSuperseded,
                 ChangesUnchanged = previousSnapshot != null &&
                     previousSnapshot.Changes.Count == nextSnapshot.Changes.Count &&
                     previousSnapshot.Changes.Zip(nextSnapshot.Changes, (a, b) =>
@@ -201,6 +206,13 @@ namespace Orbiters.UnitGit.Editor
             }
 
             refreshingSnapshot = false;
+            if (task.Status == TaskStatus.RanToCompletion && task.Result.Superseded)
+            {
+                // Keep the current view while the search debounce or the replacement refresh runs.
+                refreshAgainRequested = false;
+                if (logSearch == logSearchDraft) RefreshSnapshot();
+                return;
+            }
             if (task.Status != TaskStatus.RanToCompletion)
             {
                 Exception error = task.Exception != null ? task.Exception.GetBaseException() : null;
@@ -252,11 +264,10 @@ namespace Orbiters.UnitGit.Editor
 
         private void ReconcileSnapshotSelection()
         {
-            if (snapshot.Branches.Count > 0 &&
-                (selectedBranch == null || snapshot.Branches.All(branch => branch.FullRef != selectedBranch.FullRef)))
-            {
-                selectedBranch = snapshot.Branches.FirstOrDefault(branch => branch.IsCurrent) ?? snapshot.Branches[0];
-            }
+            string selectedRef = selectedBranch?.FullRef;
+            selectedBranch = snapshot.Branches.FirstOrDefault(branch => branch.FullRef == selectedRef)
+                ?? snapshot.Branches.FirstOrDefault(branch => branch.IsCurrent)
+                ?? snapshot.Branches.FirstOrDefault();
 
             if (snapshot.Changes.Count > 0 &&
                 (string.IsNullOrWhiteSpace(selectedChangePath) ||
@@ -314,6 +325,7 @@ namespace Orbiters.UnitGit.Editor
         private sealed class SnapshotRefreshResult
         {
             public UnitGitSnapshot Snapshot;
+            public bool Superseded;
             public bool ChangesUnchanged;
         }
     }

@@ -85,10 +85,10 @@ namespace Orbiters.UnitGit.Editor
             logPage = Mathf.Clamp(logPage, 0, pageCount - 1);
 
             toolbar.Add(BuildToolbarChip("Branch: " + Shorten(snapshot.CurrentBranch, 28)));
-            toolbar.Add(BuildToolbarChip(totalCommits + " commits"));
-            if (pageCount > 1)
+            toolbar.Add(BuildToolbarChip(totalCommits + (snapshot.HasMoreCommits ? "+ commits" : " commits")));
+            if (pageCount > 1 || snapshot.HasMoreCommits)
             {
-                toolbar.Add(BuildToolbarChip("Page " + (logPage + 1) + "/" + pageCount));
+                toolbar.Add(BuildToolbarChip("Page " + (logPage + 1) + (snapshot.HasMoreCommits ? "" : "/" + pageCount)));
                 toolbar.Add(BuildActionButton("Prev", string.Empty, PreviousLogPage));
                 toolbar.Add(BuildActionButton("Next", string.Empty, NextLogPage));
             }
@@ -155,6 +155,12 @@ namespace Orbiters.UnitGit.Editor
             int pageCount = Math.Max(1, (totalCommits + CommitPageSize - 1) / CommitPageSize);
             if (logPage >= pageCount - 1)
             {
+                if (snapshot.HasMoreCommits && !refreshingSnapshot)
+                {
+                    historyLimit += CommitPageSize * 3;
+                    logPage++;
+                    RefreshSnapshot();
+                }
                 return;
             }
 

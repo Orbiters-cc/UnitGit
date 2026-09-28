@@ -46,7 +46,7 @@ namespace Orbiters.UnitGit.Editor
         public UnitGitProcessLogHandler ProcessLogReceived { get; set; }
         public Func<bool> ReadSuperseded { get; set; }
 
-        public UnitGitSnapshot BuildSnapshot(string logSearch)
+        public UnitGitSnapshot BuildSnapshot(string logSearch, int historyLimit = 300)
         {
             var snapshot = new UnitGitSnapshot
             {
@@ -89,7 +89,10 @@ namespace Orbiters.UnitGit.Editor
             snapshot.Releases = UnitGitReleases.Load(ProjectRoot);
             if (snapshot.HasCommits)
             {
-                snapshot.Commits = GetCommits(logSearch);
+                historyLimit = Math.Max(1, historyLimit);
+                snapshot.Commits = GetCommits(logSearch, historyLimit + 1);
+                snapshot.HasMoreCommits = snapshot.Commits.Count > historyLimit;
+                if (snapshot.HasMoreCommits) snapshot.Commits.RemoveAt(historyLimit);
                 var message = GetHeadCommitMessage();
                 if (message.Success)
                     snapshot.HeadMessage = message.StandardOutput;
@@ -374,14 +377,18 @@ namespace Orbiters.UnitGit.Editor
 
         private GitCommandResult RewriteHeadHistory(IList<string> commitHashes, string message, bool squash)
         {
-            GitCommandResult headResult = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", "HEAD");
+            GitCommandResult branchResult = RunGit(DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
+            if (!branchResult.Success)
+                return Failure("Check out a branch before rewriting history.");
+            string branchRef = FirstNonEmptyLine(branchResult.StandardOutput);
+            GitCommandResult headResult = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", branchRef);
             if (!headResult.Success)
             {
                 return headResult;
             }
 
             string oldHead = FirstNonEmptyLine(headResult.StandardOutput);
-            GitCommandResult historyResult = RunGit(DefaultTimeoutMilliseconds, "rev-list", "--topo-order", "--reverse", "HEAD");
+            GitCommandResult historyResult = RunGit(DefaultTimeoutMilliseconds, "rev-list", "--topo-order", "--reverse", oldHead);
             if (!historyResult.Success)
             {
                 return historyResult;
@@ -499,13 +506,16 @@ namespace Orbiters.UnitGit.Editor
                 return Failure("Could not resolve the rewritten HEAD.");
             }
 
-            GitCommandResult updateResult = RunGit(DefaultTimeoutMilliseconds, "reset", "--soft", newHead);
+            // Commit trees are unchanged. Move only the captured branch, and only if nobody advanced it.
+            // Do not reset the index or whichever branch another process has since checked out.
+            GitCommandResult updateResult = RunGit(DefaultTimeoutMilliseconds, "update-ref", "--no-deref",
+                "-m", "Unit Git: rewrite history", branchRef, newHead, oldHead);
             if (!updateResult.Success)
             {
                 return updateResult;
             }
 
-            updateResult.StandardOutput = "Rewrote HEAD " + ShortHash(oldHead) + " -> " + ShortHash(newHead) + ".";
+            updateResult.StandardOutput = "Rewrote " + branchRef + " " + ShortHash(oldHead) + " -> " + ShortHash(newHead) + ".";
             return updateResult;
         }
 
@@ -746,17 +756,22 @@ namespace Orbiters.UnitGit.Editor
                 return Fetch();
             }
 
-            GitCommandResult checkout = branch.IsCurrent
-                ? new GitCommandResult { ExitCode = 0 }
-                : RunGit(DefaultTimeoutMilliseconds, "checkout", branch.Name);
+            branch = GetBranches().FirstOrDefault(candidate => !candidate.IsRemote && candidate.FullRef == branch.FullRef);
+            if (branch == null)
+                return Failure("The selected branch no longer exists. Refresh the branch list.");
+            if (string.IsNullOrWhiteSpace(branch.Upstream))
+                return Failure("Selected branch has no upstream. Fetch still works, but there is nothing to fast-forward.");
+
+            GitCommandResult checkout = RunGit(DefaultTimeoutMilliseconds, "checkout", branch.Name);
             if (!checkout.Success)
             {
                 return checkout;
             }
 
-            if (string.IsNullOrWhiteSpace(branch.Upstream))
+            GitCommandResult current = RunGit(DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
+            if (!current.Success || FirstNonEmptyLine(current.StandardOutput) != branch.FullRef)
             {
-                return Failure("Selected branch has no upstream. Fetch still works, but there is nothing to fast-forward.");
+                return Failure("The current branch changed during Update. Refresh and try again.");
             }
 
             return PullFastForward();
@@ -1060,29 +1075,41 @@ namespace Orbiters.UnitGit.Editor
 
         internal List<UnitGitCommit> GetCommits(string logSearch, int maxCount = 250)
         {
-            var args = new List<string>
+            var commits = new List<UnitGitCommit>();
+            if (maxCount <= 0) return commits;
+            bool searching = !string.IsNullOrWhiteSpace(logSearch);
+            int chunkSize = searching ? 500 : maxCount;
+            int skipped = 0;
+            while (commits.Count < maxCount && !(ReadSuperseded?.Invoke() ?? false))
             {
-                "log",
-                "--all",
-                "--max-count=" + maxCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                "--date=relative",
-                "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%D%x1f%(trailers:key=" + UnitGitReleases.TrailerKey + ",valueonly,separator=%x2C)"
-            };
+                var args = new List<string>
+                {
+                    "log",
+                    "--all",
+                    "--max-count=" + chunkSize.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "--skip=" + skipped.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "--date=relative",
+                    "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%D%x1f%(trailers:key=" + UnitGitReleases.TrailerKey + ",valueonly,separator=%x2C)"
+                };
 
-            var result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
-            if (!result.Success)
-            {
-                // Older Git versions do not support the %(trailers) pretty-format placeholder.
-                args[args.Count - 1] = "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%D";
-                result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+                var result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+                if (!result.Success && !(ReadSuperseded?.Invoke() ?? false))
+                {
+                    // Older Git versions do not support the %(trailers) pretty-format placeholder.
+                    args[args.Count - 1] = "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%D";
+                    result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+                }
+
+                if (ReadSuperseded?.Invoke() ?? false) break;
+                if (!result.Success)
+                    throw new InvalidOperationException("Could not read Git history: " + result.Message);
+
+                var chunk = ParseCommits(result.StandardOutput, string.Empty);
+                commits.AddRange(chunk.Where(commit => MatchesSearch(commit, logSearch)).Take(maxCount - commits.Count));
+                if (!searching || chunk.Count < chunkSize) break;
+                skipped += chunk.Count;
             }
-
-            if (!result.Success)
-            {
-                return new List<UnitGitCommit>();
-            }
-
-            return ParseCommits(result.StandardOutput, logSearch);
+            return commits;
         }
 
         internal static UnitGitSnapshot ParseStatusOutput(string output)
@@ -1508,18 +1535,26 @@ namespace Orbiters.UnitGit.Editor
         internal static void ParseUnifiedDiff(string output, UnitGitDiff diff)
         {
             var pendingRemoved = new Queue<string>();
+            bool inHunk = false;
             foreach (string rawLine in SplitLines(output))
             {
-                if (rawLine.StartsWith("diff --git ", StringComparison.Ordinal) ||
+                if (rawLine.StartsWith("diff --git ", StringComparison.Ordinal))
+                {
+                    FlushRemoved(diff, pendingRemoved);
+                    inHunk = false;
+                    continue;
+                }
+                if (!inHunk && (
                     rawLine.StartsWith("index ", StringComparison.Ordinal) ||
                     rawLine.StartsWith("--- ", StringComparison.Ordinal) ||
-                    rawLine.StartsWith("+++ ", StringComparison.Ordinal))
+                    rawLine.StartsWith("+++ ", StringComparison.Ordinal)))
                 {
                     continue;
                 }
 
                 if (rawLine.StartsWith("@@", StringComparison.Ordinal))
                 {
+                    inHunk = true;
                     FlushRemoved(diff, pendingRemoved);
                     diff.Lines.Add(new UnitGitDiffLine
                     {

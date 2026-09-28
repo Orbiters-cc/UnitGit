@@ -46,6 +46,7 @@ namespace Orbiters.UnitGit.Editor
         public List<UnitGitStatusEntry> Changes = new List<UnitGitStatusEntry>();
         public UnitGitFileList ChangeList = new UnitGitFileList();
         public List<UnitGitCommit> Commits = new List<UnitGitCommit>();
+        public bool HasMoreCommits;
         public UnitGitReleaseFile Releases = new UnitGitReleaseFile();
         public List<string> Shelves = new List<string>();
         public string HeadMessage = string.Empty;
@@ -87,6 +88,11 @@ namespace Orbiters.UnitGit.Editor
         {
             get
             {
+                if (IndexStatus == 'U' || WorkTreeStatus == 'U' ||
+                    (IndexStatus == 'A' && WorkTreeStatus == 'A') ||
+                    (IndexStatus == 'D' && WorkTreeStatus == 'D'))
+                    return "conflict";
+
                 if (IsUntracked)
                 {
                     return "untracked";
@@ -115,11 +121,6 @@ namespace Orbiters.UnitGit.Editor
                 if (IndexStatus == 'C' || WorkTreeStatus == 'C')
                 {
                     return "copied";
-                }
-
-                if (IndexStatus == 'U' || WorkTreeStatus == 'U')
-                {
-                    return "conflict";
                 }
 
                 return (IndexStatus.ToString() + WorkTreeStatus).Trim();

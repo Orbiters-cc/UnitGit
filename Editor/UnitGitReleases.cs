@@ -60,6 +60,7 @@ namespace Orbiters.UnitGit.Editor
     public sealed class UnitGitReleaseResult
     {
         public bool Success;
+        public bool NoChanges;
         public string Message = string.Empty;
         public string CommitHash = string.Empty;
         public string ReleaseId = string.Empty;
@@ -462,6 +463,14 @@ namespace Orbiters.UnitGit.Editor
                 {
                     return Fail("Staging files failed: " + stage.Message);
                 }
+
+                var diffArgs = new List<string> { "diff", "--cached", "--quiet", "--exit-code", "--" };
+                diffArgs.AddRange(paths);
+                GitCommandResult difference = index.Run(diffArgs.ToArray());
+                if (difference.Success)
+                    return new UnitGitReleaseResult { Success = true, NoChanges = true, Message = "No new changes to checkpoint." };
+                if (difference.TimedOut || difference.ExitCode != 1)
+                    return Fail("Checking checkpoint changes failed: " + difference.Message);
 
                 var commitArgs = new List<string> { "commit", "-m", commitTitle.Trim() };
                 if (!string.IsNullOrWhiteSpace(trailingParagraph))

@@ -64,6 +64,7 @@ namespace Orbiters.UnitGit.Editor
         private string logSearch = string.Empty;
         private string logSearchDraft = string.Empty;
         private int logPage;
+        private int historyLimit = CommitPageSize * 3;
         private string diffSearch = string.Empty;
         private int diffSearchMatchIndex;
         private TextField diffSearchField;
