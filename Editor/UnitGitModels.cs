@@ -180,7 +180,7 @@ namespace Orbiters.UnitGit.Editor
         Hunk
     }
 
-    internal enum UnitGitRemoteProvider
+    public enum UnitGitRemoteProvider
     {
         GitHub,
         GitLab

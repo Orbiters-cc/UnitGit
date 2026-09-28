@@ -15,7 +15,7 @@ namespace Orbiters.UnitGit.Editor
         private const char BranchFieldSeparator = '\t';
         private const int MaxUntrackedDiffPreviewBytes = 512 * 1024;
         private const int BinarySniffBytes = 4096;
-        private const int DefaultTimeoutMilliseconds = 30000;
+        internal const int DefaultTimeoutMilliseconds = 30000;
         public const int LongTimeoutMilliseconds = 900000;
         private static readonly Regex AheadRegex = new Regex(@"ahead\s+(\d+)", RegexOptions.Compiled);
         private static readonly Regex BehindRegex = new Regex(@"behind\s+(\d+)", RegexOptions.Compiled);
@@ -843,9 +843,19 @@ namespace Orbiters.UnitGit.Editor
             return RunProcess(GetGitHubCliExecutable(), "GitHub CLI command timed out.", ProjectRoot, timeoutMilliseconds, ProcessLogReceived, arguments);
         }
 
-        private bool IsGitHubCliAvailable()
+        internal bool IsGitHubCliAvailable()
         {
             return RunGitHubCli(10000, "--version").Success;
+        }
+
+        internal bool IsGitHubCliSignedIn()
+        {
+            return RunGitHubCli(10000, "auth", "status", "--hostname", "github.com").Success;
+        }
+
+        internal bool IsGitLabCliSignedIn()
+        {
+            return RunGitLabCli(10000, "auth", "status", "--hostname", "gitlab.com").Success;
         }
 
         public GitCommandResult GitLabLogin()
@@ -891,7 +901,7 @@ namespace Orbiters.UnitGit.Editor
             return RunProcess(GetGitLabCliExecutable(), "GitLab CLI command timed out.", ProjectRoot, timeoutMilliseconds, ProcessLogReceived, arguments);
         }
 
-        private bool IsGitLabCliAvailable()
+        internal bool IsGitLabCliAvailable()
         {
             return RunGitLabCli(10000, "--version").Success;
         }
@@ -1011,7 +1021,7 @@ namespace Orbiters.UnitGit.Editor
             return GetRemoteNames().Count > 0;
         }
 
-        private List<string> GetRemoteNames()
+        internal List<string> GetRemoteNames()
         {
             var result = RunGit(DefaultTimeoutMilliseconds, "remote");
             if (!result.Success)
@@ -1042,19 +1052,19 @@ namespace Orbiters.UnitGit.Editor
             return ParseBranches(result.StandardOutput);
         }
 
-        private bool HasCommits()
+        internal bool HasCommits()
         {
             var result = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", "HEAD");
             return result.Success;
         }
 
-        private List<UnitGitCommit> GetCommits(string logSearch)
+        internal List<UnitGitCommit> GetCommits(string logSearch, int maxCount = 250)
         {
             var args = new List<string>
             {
                 "log",
                 "--all",
-                "--max-count=250",
+                "--max-count=" + maxCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 "--date=relative",
                 "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%D%x1f%(trailers:key=" + UnitGitReleases.TrailerKey + ",valueonly,separator=%x2C)"
             };

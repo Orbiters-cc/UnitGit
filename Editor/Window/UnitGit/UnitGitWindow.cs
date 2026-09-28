@@ -83,7 +83,7 @@ namespace Orbiters.UnitGit.Editor
         private int refreshRequestId;
 
         [MenuItem("Tools/Orbiters/Unit Git")]
-        private static void OpenWindow()
+        internal static void OpenWindow()
         {
             var window = GetWindow<UnitGitWindow>();
             window.titleContent = new GUIContent(UnitGitInfo.DisplayName);

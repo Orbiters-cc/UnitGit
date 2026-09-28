@@ -57,22 +57,7 @@ namespace Orbiters.UnitGit.Editor
 
         private string GetDefaultRemoteRepositoryName()
         {
-            string root = snapshot != null && !string.IsNullOrWhiteSpace(snapshot.ProjectRoot)
-                ? snapshot.ProjectRoot
-                : UnitGitService.GetUnityProjectRoot();
-            string name = Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                return "unity-project";
-            }
-
-            var characters = name
-                .Trim()
-                .Select(character => char.IsLetterOrDigit(character) || character == '-' || character == '_' || character == '.'
-                    ? character
-                    : '-')
-                .ToArray();
-            return new string(characters).Trim('-', '.', '_').ToLowerInvariant();
+            return UnitGitOverview.DefaultRepositoryName;
         }
     }
 }
