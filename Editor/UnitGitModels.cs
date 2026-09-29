@@ -63,6 +63,9 @@ namespace Orbiters.UnitGit.Editor
         public UnitGitReleaseFile Releases = new UnitGitReleaseFile();
         public List<string> Shelves = new List<string>();
         public string HeadMessage = string.Empty;
+        // Files Git still tracks although the ignore rules now leave them out (MCB version downloads).
+        public List<string> TrackedIgnoredDownloads = new List<string>();
+        public long TrackedIgnoredDownloadBytes;
     }
 
     internal sealed class UnitGitBranch

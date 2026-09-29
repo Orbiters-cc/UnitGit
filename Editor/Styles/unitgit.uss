@@ -1141,6 +1141,44 @@
     -unity-text-align: middle-left;
 }
 
+.unitgit-notice {
+    flex-direction: row;
+    align-items: center;
+    margin: 6px 8px 4px 8px;
+    padding: 8px 8px 8px 12px;
+    border-radius: 8px;
+    background-color: rgba(255, 176, 32, 0.08);
+    border-width: 1px;
+    border-color: rgba(255, 176, 32, 0.25);
+}
+
+.unitgit-notice__texts {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    margin-right: 8px;
+}
+
+.unitgit-notice__title {
+    margin: 0;
+    padding: 0;
+    color: #ffd48a;
+    -unity-font-style: bold;
+    white-space: normal;
+}
+
+.unitgit-notice__body {
+    margin: 2px 0 0 0;
+    padding: 0;
+    color: #b9b0a0;
+    font-size: 11px;
+    white-space: normal;
+}
+
+.unitgit-notice__button {
+    flex-shrink: 0;
+}
+
 .unitgit-message-panel {
     width: 620px;
     max-width: 620px;

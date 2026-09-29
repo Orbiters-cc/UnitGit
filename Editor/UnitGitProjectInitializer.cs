@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
@@ -64,6 +65,53 @@ namespace Orbiters.UnitGit.Editor
             "!Packages/vpm-manifest.json"
         };
 
+        // MCB's downloaded version patches: large, and MCB downloads them again when a version is switched to. The rest of
+        // a version folder (avatar definitions, logic prefabs, textures) can be referenced by the avatar and stays tracked.
+        internal const string McbDownloadsFolder = "Assets/MCB/assets";
+        internal static readonly string[] McbDownloadPatterns =
+        {
+            "",
+            "# Unit Git: MCB version downloads (MCB downloads them again when needed)",
+            "/[Aa]ssets/MCB/assets/*/versions/**/*.bin",
+            "/[Aa]ssets/MCB/assets/*/versions/**/*.bin.meta"
+        };
+
+        private static readonly HashSet<string> EnsuredRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Adds the default rules that came after a repository was created, once per project and editor session: today the
+        /// MCB download rules, for projects that use MCB.
+        /// </summary>
+        internal static void EnsureDefaultRules(string projectRoot)
+        {
+            lock (EnsuredRoots)
+            {
+                if (!EnsuredRoots.Add(projectRoot)) return;
+            }
+            if (!Directory.Exists(Path.Combine(projectRoot, "Assets", "MCB"))) return;
+            AppendMissing(Path.Combine(projectRoot, ".gitignore"), McbDownloadPatterns);
+        }
+
+        private static bool AppendMissing(string path, string[] patterns)
+        {
+            string existing = File.Exists(path) ? File.ReadAllText(path, Encoding.UTF8) : string.Empty;
+            var builder = new StringBuilder(existing.TrimEnd());
+            bool changed = false;
+            foreach (string pattern in patterns)
+            {
+                if (string.IsNullOrEmpty(pattern) || existing.IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                if (!changed)
+                {
+                    builder.AppendLine();
+                    builder.AppendLine();
+                    changed = true;
+                }
+                builder.AppendLine(pattern);
+            }
+            if (changed) File.WriteAllText(path, builder.ToString().TrimStart() + Environment.NewLine, Encoding.UTF8);
+            return changed;
+        }
+
         public GitCommandResult Initialize(UnitGitService gitService, bool excludeRootPackageFolder)
         {
             if (gitService == null)
@@ -77,6 +125,7 @@ namespace Orbiters.UnitGit.Editor
             }
 
             EnsureVrchatGitIgnore(gitService.ProjectRoot, excludeRootPackageFolder);
+            AppendMissing(Path.Combine(gitService.ProjectRoot, ".gitignore"), McbDownloadPatterns);
 
             var initResult = gitService.RunGit(UnitGitService.LongTimeoutMilliseconds, "init");
             if (!initResult.Success)

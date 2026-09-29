@@ -30,6 +30,29 @@ namespace Orbiters.UnitGit.Editor
             return workspace;
         }
 
+        // MCB version downloads committed before Unit Git ignored them: Git keeps tracking them until told otherwise.
+        private VisualElement BuildTrackedDownloadsNotice()
+        {
+            var notice = new VisualElement();
+            notice.AddToClassList("unitgit-notice");
+            var texts = new VisualElement();
+            texts.AddToClassList("unitgit-notice__texts");
+            notice.Add(texts);
+            var title = new Label("MCB downloads are in Git (" + UnitGitService.FormatBytes(snapshot.TrackedIgnoredDownloadBytes) + ")");
+            title.AddToClassList("unitgit-notice__title");
+            texts.Add(title);
+            var body = new Label(snapshot.TrackedIgnoredDownloads.Count + " version files MCB downloads again when needed. Stop tracking them to keep your repository small: they stay on disk.");
+            body.AddToClassList("unitgit-notice__body");
+            texts.Add(body);
+            var paths = new List<string>(snapshot.TrackedIgnoredDownloads);
+            var button = BuildActionButton("Stop tracking", "unitgit-button--primary", () =>
+                RunAction("Stop tracking MCB downloads", () => gitService.StopTracking(paths)));
+            button.tooltip = "Runs git rm --cached on these files: they stay on disk, and their removal is staged for your next commit. Commits already made keep their copies.";
+            button.AddToClassList("unitgit-notice__button");
+            notice.Add(button);
+            return notice;
+        }
+
         private VisualElement BuildLocalChangesListPane()
         {
             var pane = new VisualElement();
@@ -51,6 +74,11 @@ namespace Orbiters.UnitGit.Editor
             actions.Add(BuildActionButton("Unstage All", string.Empty, UnstageAll));
             actions.Add(BuildActionButton("Shelve", string.Empty, ShelveAll));
             pane.Add(actions);
+
+            if (snapshot.TrackedIgnoredDownloads.Count > 0)
+            {
+                pane.Add(BuildTrackedDownloadsNotice());
+            }
 
             var list = new VisualElement();
             list.AddToClassList("unitgit-changes-list");

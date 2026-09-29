@@ -74,6 +74,8 @@ namespace Orbiters.UnitGit.Editor
                 return snapshot;
             }
 
+            UnitGitProjectInitializer.EnsureDefaultRules(ProjectRoot);
+
             var status = RunGit(DefaultTimeoutMilliseconds, "status", "--porcelain=v1", "-b", "-uall");
             if (!status.Success)
             {
@@ -99,9 +101,40 @@ namespace Orbiters.UnitGit.Editor
                 var shelves = RunGit(DefaultTimeoutMilliseconds, "stash", "list");
                 if (shelves.Success)
                     snapshot.Shelves = ParseStashList(shelves.StandardOutput);
+                ReadTrackedIgnoredDownloads(snapshot);
             }
 
             return snapshot;
+        }
+
+        private void ReadTrackedIgnoredDownloads(UnitGitSnapshot snapshot)
+        {
+            if (!Directory.Exists(Path.Combine(ProjectRoot, UnitGitProjectInitializer.McbDownloadsFolder))) return;
+            var tracked = RunGit(DefaultTimeoutMilliseconds, "ls-files", "-z", "--cached", "--ignored", "--exclude-standard", "--", UnitGitProjectInitializer.McbDownloadsFolder);
+            if (!tracked.Success) return;
+            foreach (string entry in tracked.StandardOutput.Split('\0'))
+            {
+                string path = entry.Trim('\r', '\n');
+                if (path.Length == 0) continue;
+                snapshot.TrackedIgnoredDownloads.Add(path);
+                var file = new FileInfo(Path.Combine(ProjectRoot, path));
+                if (file.Exists) snapshot.TrackedIgnoredDownloadBytes += file.Length;
+            }
+        }
+
+        /// <summary>Stops tracking these files: they stay on disk and their removal is staged for the next commit.</summary>
+        public GitCommandResult StopTracking(IList<string> paths)
+        {
+            var result = new GitCommandResult { ExitCode = 0 };
+            for (int start = 0; start < paths.Count; start += 50)
+            {
+                var args = new List<string> { "rm", "--cached", "--quiet", "--ignore-unmatch", "--" };
+                for (int i = start; i < Math.Min(paths.Count, start + 50); i++) args.Add(paths[i]);
+                result = RunGit(LongTimeoutMilliseconds, args.ToArray());
+                if (!result.Success) return result;
+            }
+            result.StandardOutput = "Stopped tracking " + paths.Count + " files. They stay on disk; commit to record it.";
+            return result;
         }
 
         public UnitGitCommitDetails GetCommitDetails(string fullHash)
@@ -1607,7 +1640,7 @@ namespace Orbiters.UnitGit.Editor
             return bytesRead > 0 && suspiciousControls > bytesRead / 10;
         }
 
-        private static string FormatBytes(long bytes)
+        internal static string FormatBytes(long bytes)
         {
             if (bytes < 1024)
             {
@@ -1619,7 +1652,12 @@ namespace Orbiters.UnitGit.Editor
                 return (bytes / 1024f).ToString("0.#") + " KB";
             }
 
-            return (bytes / (1024f * 1024f)).ToString("0.#") + " MB";
+            if (bytes < 1024L * 1024 * 1024)
+            {
+                return (bytes / (1024f * 1024f)).ToString("0.#") + " MB";
+            }
+
+            return (bytes / (1024f * 1024f * 1024f)).ToString("0.#") + " GB";
         }
 
         private string GetSafeProjectPath(string projectPath)
