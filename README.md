@@ -38,7 +38,7 @@ Models (`.fbx`, `.obj`) and prefabs also have a **3D** view: both versions side 
 right-drag to move, scroll to zoom, double-click to reset), each coloured by what changed: moved vertices from yellow to
 red, whole parts moved, other materials, other blendshapes or bones, added parts. A table lists every mesh with its
 numbers (vertices moved and how far, vertex counts, blendshapes added, removed or reshaped). Models are read straight
-from the file, so nothing is imported; prefab versions are imported into `Assets/__UnitGit Compare` (listed in the
+from the file with Orbiters Toolkit's mesh comparison, so nothing is imported; prefab versions are imported into `Assets/__UnitGit Compare` (listed in the
 repository's local exclude file) and deleted afterwards. In the Log, **Compare** on a scene, prefab or model of a
 commit opens the same views for what that commit changed.
 

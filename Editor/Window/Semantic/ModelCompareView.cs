@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Orbiters.Toolkit.Editor.Meshes;
 using Orbiters.UnitGit.Editor.Semantic;
 using UnityEditor;
 using UnityEngine;
@@ -136,7 +137,7 @@ namespace Orbiters.UnitGit.Editor
                     // Models are parsed here and their copy deleted: only prefabs are imported.
                     var bytes = File.ReadAllBytes(file);
                     File.Delete(file);
-                    return new Read { Bytes = bytes, Meshes = ModelVersions.Parse(originalPath, bytes) };
+                    return new Read { Bytes = bytes, Meshes = MeshComparison.Parse(originalPath, bytes) };
                 }
                 return new[] { Take(left, "mine"), Take(right, "theirs"), Take(reference, "base") };
             });
@@ -174,12 +175,12 @@ namespace Orbiters.UnitGit.Editor
                 {
                     if (read == null) return null;
                     ModelInfo info;
-                    if (read.Meshes != null) info = ModelVersions.FromFile(originalPath, read.Bytes, read.Meshes);
+                    if (read.Meshes != null) info = MeshComparison.FromFile(originalPath, read.Bytes, read.Meshes);
                     else
                     {
                         string asset = ModelVersions.Import(read.File, originalPath, label);
                         loaded.Assets.Add(asset);
-                        info = ModelVersions.Describe(AssetDatabase.LoadAssetAtPath<GameObject>(asset), new FileInfo(read.File).Length);
+                        info = MeshComparison.Describe(AssetDatabase.LoadAssetAtPath<GameObject>(asset), new FileInfo(read.File).Length);
                     }
                     loaded.Infos.Add(info);
                     return info;
@@ -189,8 +190,8 @@ namespace Orbiters.UnitGit.Editor
                 var baseInfo = Take(reads[2], "base");
                 loaded.AgainstBase = baseInfo != null;
                 var empty = new ModelInfo();
-                if (loaded.Left.Info != null) loaded.Left.Diff = ModelVersions.Compare(baseInfo ?? loaded.Right.Info ?? empty, loaded.Left.Info);
-                if (loaded.Right.Info != null) loaded.Right.Diff = ModelVersions.Compare(baseInfo ?? loaded.Left.Info ?? empty, loaded.Right.Info);
+                if (loaded.Left.Info != null) loaded.Left.Diff = MeshComparison.Compare(baseInfo ?? loaded.Right.Info ?? empty, loaded.Left.Info);
+                if (loaded.Right.Info != null) loaded.Right.Diff = MeshComparison.Compare(baseInfo ?? loaded.Left.Info ?? empty, loaded.Right.Info);
                 Colour(loaded.Left);
                 Colour(loaded.Right);
             }
@@ -230,7 +231,7 @@ namespace Orbiters.UnitGit.Editor
             var shader = Shader.Find(ShaderName);
             changesMaterial = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             plainMaterial = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-            plainMaterial.SetColor("_Tint", ModelVersions.Unchanged);
+            plainMaterial.SetColor("_Tint", MeshComparison.Unchanged);
             leftPreview = NewPreview();
             rightPreview = NewPreview();
             frame = loaded.Left.Info?.Bounds ?? loaded.Right.Info?.Bounds ?? new Bounds(Vector3.zero, Vector3.one);
@@ -422,11 +423,11 @@ namespace Orbiters.UnitGit.Editor
                 name.AddToClassList("ugm-legend__text");
                 legend.Add(name);
             }
-            Chip(ModelVersions.Added, "added", "A mesh that only this side has.");
-            Chip(ModelVersions.Moved, "placed", "The whole mesh moved, turned or scaled.");
-            Chip(ModelVersions.Materials, "materials", "Other materials on the same mesh.");
-            Chip(ModelVersions.Shapes, "blendshapes", "Same surface, other blendshapes or bones.");
-            Chip(ModelVersions.Unchanged, "same", "Unchanged.");
+            Chip(MeshComparison.Added, "added", "A mesh that only this side has.");
+            Chip(MeshComparison.Moved, "placed", "The whole mesh moved, turned or scaled.");
+            Chip(MeshComparison.Materials, "materials", "Other materials on the same mesh.");
+            Chip(MeshComparison.Shapes, "blendshapes", "Same surface, other blendshapes or bones.");
+            Chip(MeshComparison.Unchanged, "same", "Unchanged.");
             return legend;
         }
 
@@ -472,7 +473,7 @@ namespace Orbiters.UnitGit.Editor
             chip.AddToClassList("ugm-chip--" + diff.Change.ToString().ToLowerInvariant());
             cell.Add(chip);
             var facts = new List<string>();
-            if (diff.Change == PartChange.Reshaped) facts.Add(diff.MovedVertices.ToString("N0") + " vertices moved, up to " + ModelVersions.Length(diff.MaxDistance));
+            if (diff.Change == PartChange.Reshaped) facts.Add(diff.MovedVertices.ToString("N0") + " vertices moved, up to " + MeshComparison.Length(diff.MaxDistance));
             if (diff.VerticesBefore != diff.VerticesAfter && diff.Change != PartChange.Added && diff.Change != PartChange.Removed)
                 facts.Add(diff.VerticesBefore.ToString("N0") + " → " + diff.VerticesAfter.ToString("N0") + " vertices");
             if (diff.Change == PartChange.Added) facts.Add(diff.VerticesAfter.ToString("N0") + " vertices");

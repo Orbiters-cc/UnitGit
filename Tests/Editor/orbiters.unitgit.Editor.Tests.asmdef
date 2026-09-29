@@ -2,7 +2,8 @@
   "name": "orbiters.unitgit.Editor.Tests",
   "references": [
     "orbiters.unitgit",
-    "orbiters.unitgit.Editor"
+    "orbiters.unitgit.Editor",
+    "Orbiters.Toolkit.Editor"
   ],
   "includePlatforms": [
     "Editor"

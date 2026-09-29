@@ -1,7 +1,8 @@
 {
   "name": "orbiters.unitgit.Editor",
   "references": [
-    "orbiters.unitgit"
+    "orbiters.unitgit",
+    "Orbiters.Toolkit.Editor"
   ],
   "includePlatforms": [
     "Editor"

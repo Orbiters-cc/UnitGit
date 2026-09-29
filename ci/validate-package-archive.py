@@ -21,6 +21,7 @@ REQUIRED_USS_FILES = (
     "Editor/Styles/unitgit.uss",
 )
 ALLOWED_EXTERNAL_ASMDEF_REFERENCES = {
+    "Orbiters.Toolkit.Editor",
     "VRC.SDK3A.Editor",
     "VRC.SDKBase",
     "VRC.SDKBase.Editor",
