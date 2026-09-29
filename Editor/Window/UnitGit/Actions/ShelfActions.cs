@@ -31,35 +31,38 @@ namespace Orbiters.UnitGit.Editor
             RunAction("shelve", () => gitService.ShelveAll(shelfMessage));
         }
 
+        // Actions run on a worker thread: pass the confirmed selection, never read the live field there.
         private void CheckoutSelectedBranch()
         {
-            if (selectedBranch == null)
+            UnitGitBranch branch = selectedBranch;
+            if (branch == null)
             {
                 AppendConsole("checkout", "Select a branch first.");
                 RebuildContent();
                 return;
             }
 
-            string command = selectedBranch.IsRemote
-                ? GitCommand("checkout", "-t", selectedBranch.Name)
-                : GitCommand("checkout", selectedBranch.Name);
+            string command = branch.IsRemote
+                ? GitCommand("checkout", "-t", branch.Name)
+                : GitCommand("checkout", branch.Name);
             if (!ConfirmGitOperation(
                     "Checkout Branch",
                     "Checkout",
                     command,
-                    "Checkout " + selectedBranch.Name + ".",
+                    "Checkout " + branch.Name + ".",
                     "This can rewrite working tree files. Git will refuse if local changes would be overwritten.",
                     GetLocalChangeCount()))
             {
                 return;
             }
 
-            RunAction("checkout " + selectedBranch.Name, () => gitService.Checkout(selectedBranch));
+            RunAction("checkout " + branch.Name, () => gitService.Checkout(branch));
         }
 
         private void ApplySelectedShelf()
         {
-            if (string.IsNullOrWhiteSpace(selectedShelf))
+            string shelf = selectedShelf;
+            if (string.IsNullOrWhiteSpace(shelf))
             {
                 AppendConsole("shelf", "Select a shelf entry first.");
                 RebuildContent();
@@ -69,20 +72,21 @@ namespace Orbiters.UnitGit.Editor
             if (!ConfirmGitOperation(
                     "Apply Shelf",
                     "Apply",
-                    GitCommand("stash", "apply", selectedShelf),
-                    "Apply " + selectedShelf + " to the working tree.",
+                    GitCommand("stash", "apply", shelf),
+                    "Apply " + shelf + " to the working tree.",
                     "This can modify local files and may produce conflicts.",
                     GetLocalChangeCount()))
             {
                 return;
             }
 
-            RunAction("stash apply " + selectedShelf, () => gitService.RunGit(30000, "stash", "apply", selectedShelf));
+            RunAction("stash apply " + shelf, () => gitService.RunGit(30000, "stash", "apply", shelf));
         }
 
         private void DropSelectedShelf()
         {
-            if (string.IsNullOrWhiteSpace(selectedShelf))
+            string shelf = selectedShelf;
+            if (string.IsNullOrWhiteSpace(shelf))
             {
                 AppendConsole("shelf", "Select a shelf entry first.");
                 RebuildContent();
@@ -92,15 +96,15 @@ namespace Orbiters.UnitGit.Editor
             if (!ConfirmGitOperation(
                     "Drop Shelf",
                     "Drop",
-                    GitCommand("stash", "drop", selectedShelf),
-                    "Drop " + selectedShelf + ".",
+                    GitCommand("stash", "drop", shelf),
+                    "Drop " + shelf + ".",
                     "This deletes the selected shelf entry.",
                     0))
             {
                 return;
             }
 
-            RunAction("stash drop " + selectedShelf, () => gitService.RunGit(30000, "stash", "drop", selectedShelf));
+            RunAction("stash drop " + shelf, () => gitService.RunGit(30000, "stash", "drop", shelf));
             selectedShelf = string.Empty;
         }
     }

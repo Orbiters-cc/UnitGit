@@ -287,7 +287,7 @@ namespace Orbiters.UnitGit.Editor
             return result;
         }
 
-        internal GitCommandResult RenameCommit(string commitHash, string message)
+        internal GitCommandResult RenameCommit(string commitHash, string message, UnitGitHeadState expected)
         {
             if (string.IsNullOrWhiteSpace(commitHash))
             {
@@ -299,10 +299,10 @@ namespace Orbiters.UnitGit.Editor
                 return Failure("Commit message is required.");
             }
 
-            return RewriteHeadHistory(new[] { commitHash.Trim() }, message, false);
+            return RewriteHeadHistory(new[] { commitHash.Trim() }, message, false, expected);
         }
 
-        internal GitCommandResult SquashCommits(IList<string> commitHashes, string message)
+        internal GitCommandResult SquashCommits(IList<string> commitHashes, string message, UnitGitHeadState expected)
         {
             if (commitHashes == null || commitHashes.Count < 2)
             {
@@ -314,10 +314,30 @@ namespace Orbiters.UnitGit.Editor
                 return Failure("Commit message is required.");
             }
 
-            return RewriteHeadHistory(commitHashes, message, true);
+            return RewriteHeadHistory(commitHashes, message, true, expected);
         }
 
-        internal GitCommandResult ResetCurrentBranch(string commitHash, UnitGitResetMode mode)
+        internal GitCommandResult ReadHeadState(out UnitGitHeadState state)
+        {
+            state = null;
+            GitCommandResult result = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "HEAD", "--symbolic-full-name", "HEAD");
+            if (!result.Success)
+            {
+                return result;
+            }
+
+            string[] lines = SplitLines(result.StandardOutput).Select(line => line.Trim()).Where(line => line.Length > 0).ToArray();
+            if (lines.Length < 2)
+            {
+                return Failure("Could not read the current branch.");
+            }
+
+            state = new UnitGitHeadState { Head = lines[0], BranchRef = lines[1] == "HEAD" ? string.Empty : lines[1] };
+            return result;
+        }
+
+        /// <summary>Resets HEAD only while it is still the branch and commit the user confirmed.</summary>
+        internal GitCommandResult ResetCurrentBranch(string commitHash, UnitGitResetMode mode, UnitGitHeadState expected)
         {
             if (string.IsNullOrWhiteSpace(commitHash))
             {
@@ -330,8 +350,47 @@ namespace Orbiters.UnitGit.Editor
                 return resolved;
             }
 
+            GitCommandResult current = ReadHeadState(out UnitGitHeadState state);
+            if (!current.Success)
+            {
+                return current;
+            }
+
+            GitCommandResult changed = CheckHeadUnchanged("Reset", expected, state, true);
+            if (changed != null)
+            {
+                return changed;
+            }
+
             string targetHash = FirstNonEmptyLine(resolved.StandardOutput);
             return RunGit(LongTimeoutMilliseconds, "reset", GetResetModeArgument(mode), targetHash);
+        }
+
+        private static GitCommandResult CheckHeadUnchanged(string operation, UnitGitHeadState expected, UnitGitHeadState current, bool sameCommit)
+        {
+            if (expected == null)
+            {
+                return Failure(operation + " has no confirmed branch. Nothing was changed; reopen the dialog to try again.");
+            }
+
+            if (!string.Equals(expected.BranchRef, current.BranchRef, StringComparison.Ordinal))
+            {
+                return Failure(operation + " was prepared for " + DescribeBranch(expected) + ", but " + DescribeBranch(current) +
+                               " is checked out now. Nothing was changed; reopen the dialog to try again.");
+            }
+
+            if (sameCommit && !string.Equals(expected.Head, current.Head, StringComparison.Ordinal))
+            {
+                return Failure(operation + " was prepared for " + DescribeBranch(expected) + " at " + ShortHash(expected.Head) +
+                               ", but it now points to " + ShortHash(current.Head) + ". Nothing was changed; reopen the dialog to try again.");
+            }
+
+            return null;
+        }
+
+        private static string DescribeBranch(UnitGitHeadState state)
+        {
+            return string.IsNullOrEmpty(state.BranchRef) ? "a detached HEAD" : "branch '" + state.BranchName + "'";
         }
 
         public GitCommandResult ShelveAll(string message)
@@ -375,12 +434,18 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
-        private GitCommandResult RewriteHeadHistory(IList<string> commitHashes, string message, bool squash)
+        private GitCommandResult RewriteHeadHistory(IList<string> commitHashes, string message, bool squash, UnitGitHeadState expected)
         {
             GitCommandResult branchResult = RunGit(DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
             if (!branchResult.Success)
                 return Failure("Check out a branch before rewriting history.");
             string branchRef = FirstNonEmptyLine(branchResult.StandardOutput);
+            // Only the confirmed branch may be rewritten. Commits added to it meanwhile are rewritten
+            // with the rest, and update-ref below refuses if it moves while the rewrite runs.
+            GitCommandResult changed = CheckHeadUnchanged(squash ? "Squash" : "Rename", expected,
+                new UnitGitHeadState { BranchRef = branchRef }, false);
+            if (changed != null)
+                return changed;
             GitCommandResult headResult = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", branchRef);
             if (!headResult.Success)
             {
@@ -462,6 +527,15 @@ namespace Orbiters.UnitGit.Editor
                 infos[history[i]] = info;
             }
 
+            if (squash)
+            {
+                GitCommandResult topology = CheckSquashTopology(history, startIndex, endIndex, selected, infos);
+                if (!topology.Success)
+                {
+                    return topology;
+                }
+            }
+
             var rewritten = new Dictionary<string, string>(StringComparer.Ordinal);
             string squashedHash = string.Empty;
             for (int i = startIndex; i < history.Count; i++)
@@ -474,13 +548,21 @@ namespace Orbiters.UnitGit.Editor
                 }
 
                 CommitRewriteInfo source = infos[originalHash];
+                List<string> parents = RewriteParents(source.Parents, rewritten);
+                if (!selected.Contains(originalHash) && parents.SequenceEqual(source.Parents, StringComparer.Ordinal))
+                {
+                    // Nothing below this commit changed (e.g. a side branch merged later): keep it
+                    // instead of creating a copy that would diverge from the branch that owns it.
+                    rewritten[originalHash] = originalHash;
+                    continue;
+                }
+
                 string treeHash = squash && i == startIndex
                     ? infos[history[endIndex]].TreeHash
                     : source.TreeHash;
                 string commitMessage = squash && i == startIndex
                     ? message
                     : (!squash && selected.Contains(originalHash) ? message : source.Message);
-                List<string> parents = RewriteParents(source.Parents, rewritten);
 
                 GitCommandResult createResult = CreateCommitFromTree(source, treeHash, parents, commitMessage);
                 if (!createResult.Success)
@@ -517,6 +599,56 @@ namespace Orbiters.UnitGit.Editor
 
             updateResult.StandardOutput = "Rewrote " + branchRef + " " + ShortHash(oldHead) + " -> " + ShortHash(newHead) + ".";
             return updateResult;
+        }
+
+        /// <summary>
+        /// The squashed commit gets the oldest selected commit's parents and the newest one's tree.
+        /// Refuse selections where that would drop or re-parent history outside the selection.
+        /// </summary>
+        private static GitCommandResult CheckSquashTopology(IList<string> history, int startIndex, int endIndex,
+            ICollection<string> selected, IDictionary<string, CommitRewriteInfo> infos)
+        {
+            string tip = history[endIndex];
+            var reached = new HashSet<string>(StringComparer.Ordinal) { tip };
+            var pending = new Stack<string>(reached);
+            while (pending.Count > 0)
+            {
+                foreach (string parent in infos[pending.Pop()].Parents)
+                {
+                    if (selected.Contains(parent) && reached.Add(parent))
+                        pending.Push(parent);
+                }
+            }
+
+            string sideCommit = selected.FirstOrDefault(hash => !reached.Contains(hash));
+            if (sideCommit != null)
+            {
+                return Failure("Selected commits must form a single line of history to squash: " + ShortHash(sideCommit) +
+                               " is not an ancestor of " + ShortHash(tip) + ".");
+            }
+
+            List<string> baseParents = infos[history[startIndex]].Parents;
+            for (int i = startIndex + 1; i <= endIndex; i++)
+            {
+                string merged = infos[history[i]].Parents.FirstOrDefault(parent => !selected.Contains(parent) && !baseParents.Contains(parent));
+                if (merged != null)
+                {
+                    return Failure("Squashing would drop merged history: " + ShortHash(history[i]) + " merges " + ShortHash(merged) +
+                                   ", which is not selected. Select the merged commits too, or leave the merge out of the selection.");
+                }
+            }
+
+            for (int i = endIndex + 1; i < history.Count; i++)
+            {
+                string forkPoint = infos[history[i]].Parents.FirstOrDefault(parent => parent != tip && selected.Contains(parent));
+                if (forkPoint != null)
+                {
+                    return Failure("Squashing would re-parent " + ShortHash(history[i]) + ": it branches off from selected commit " + ShortHash(forkPoint) +
+                                   ". Select its commits too, or pick commits nothing else branches off from.");
+                }
+            }
+
+            return new GitCommandResult();
         }
 
         private GitCommandResult GetCommitRewriteInfo(string hash, out CommitRewriteInfo info)
@@ -631,7 +763,7 @@ namespace Orbiters.UnitGit.Editor
 
             if (change.IsUnstaged && !change.IsUntracked)
             {
-                unstagedResult = RunGit(DefaultTimeoutMilliseconds, "diff", "--no-ext-diff", "--unified=80", "--", change.Path);
+                unstagedResult = RunGit(DefaultTimeoutMilliseconds, "--literal-pathspecs", "diff", "--no-ext-diff", "--unified=80", "--", change.Path);
                 if (unstagedResult.Success)
                 {
                     unstagedOutput = unstagedResult.StandardOutput;
@@ -640,7 +772,7 @@ namespace Orbiters.UnitGit.Editor
 
             if (change.IsStaged)
             {
-                stagedResult = RunGit(DefaultTimeoutMilliseconds, "diff", "--cached", "--no-ext-diff", "--unified=80", "--", change.Path);
+                stagedResult = RunGit(DefaultTimeoutMilliseconds, "--literal-pathspecs", "diff", "--cached", "--no-ext-diff", "--unified=80", "--", change.Path);
                 if (stagedResult.Success)
                 {
                     stagedOutput = stagedResult.StandardOutput;

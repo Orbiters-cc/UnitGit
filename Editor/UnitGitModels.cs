@@ -1,8 +1,21 @@
+using System;
 using System.Collections.Generic;
 
 namespace Orbiters.UnitGit.Editor
 {
     internal delegate void UnitGitProcessLogHandler(string line);
+
+    /// <summary>The checked-out branch and commit a prompt was opened for.</summary>
+    internal sealed class UnitGitHeadState
+    {
+        public string BranchRef = string.Empty; // empty for a detached HEAD
+        public string Head = string.Empty;
+
+        public string BranchName
+        {
+            get { return BranchRef.StartsWith("refs/heads/", StringComparison.Ordinal) ? BranchRef.Substring(11) : BranchRef; }
+        }
+    }
 
     internal sealed class GitCommandResult
     {

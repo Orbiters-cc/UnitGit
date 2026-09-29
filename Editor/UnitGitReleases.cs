@@ -90,6 +90,10 @@ namespace Orbiters.UnitGit.Editor
         public const string ReleasesFileName = ".unitgit-releases.json";
         public const string TrailerKey = "UnitGit-Release";
 
+        private const string IgnoredReleaseFileMessage = ReleasesFileName + " is ignored by Git, so the release metadata could not be committed " +
+            "and no release checkpoint was created. Remove the ignore rule for it (\"git check-ignore -v " + ReleasesFileName +
+            "\" shows which one), then try again.";
+
         /// <summary>
         /// Raised after an external tool successfully created a commit through this API, so open
         /// Unit Git windows can refresh their history immediately.
@@ -115,29 +119,54 @@ namespace Orbiters.UnitGit.Editor
 
         public static UnitGitReleaseFile Load(string projectRoot)
         {
+            if (TryLoad(projectRoot, out UnitGitReleaseFile file, out string error))
+            {
+                return file;
+            }
+
+            Debug.LogWarning("[UnitGit] " + error);
+            return new UnitGitReleaseFile();
+        }
+
+        /// <summary>
+        /// Fails for a catalog that exists but cannot be read, so writers never replace it with a new one.
+        /// A missing or empty file is an empty catalog.
+        /// </summary>
+        internal static bool TryLoad(string projectRoot, out UnitGitReleaseFile file, out string error)
+        {
+            file = new UnitGitReleaseFile();
+            error = string.Empty;
             try
             {
                 string path = GetReleasesFilePath(projectRoot);
                 if (!File.Exists(path))
                 {
-                    return new UnitGitReleaseFile();
+                    return true;
                 }
 
-                var parsed = JsonUtility.FromJson<UnitGitReleaseFile>(File.ReadAllText(path));
-                if (parsed == null)
+                string json = File.ReadAllText(path);
+                if (string.IsNullOrWhiteSpace(json))
                 {
-                    return new UnitGitReleaseFile();
+                    return true;
                 }
 
-                parsed.releases = parsed.releases ?? new List<UnitGitReleaseEntry>();
-                parsed.hiddenReleaseIds = parsed.hiddenReleaseIds ?? new List<string>();
-                return parsed;
+                file = JsonUtility.FromJson<UnitGitReleaseFile>(json) ?? new UnitGitReleaseFile();
+                file.releases = file.releases ?? new List<UnitGitReleaseEntry>();
+                file.hiddenReleaseIds = file.hiddenReleaseIds ?? new List<string>();
+                return true;
             }
             catch (Exception ex)
             {
-                Debug.LogWarning("[UnitGit] Could not read " + ReleasesFileName + ": " + ex.Message);
-                return new UnitGitReleaseFile();
+                file = new UnitGitReleaseFile();
+                error = "Could not read " + ReleasesFileName + ": " + ex.Message;
+                return false;
             }
+        }
+
+        private static UnitGitReleaseResult FailUnreadableCatalog(string error)
+        {
+            return Fail(error + "\nUnit Git left it unchanged so no release history is lost. Fix the file " +
+                        "(for example resolve merge conflict markers) or restore it from Git, then try again.");
         }
 
         public static UnitGitReleaseEntry FindById(UnitGitReleaseFile file, string id)
@@ -179,8 +208,11 @@ namespace Orbiters.UnitGit.Editor
 
             try
             {
-                UnitGitReleaseFile file = Load(projectRoot);
-                file.hiddenReleaseIds = file.hiddenReleaseIds ?? new List<string>();
+                if (!TryLoad(projectRoot, out UnitGitReleaseFile file, out string error))
+                {
+                    return FailUnreadableCatalog(error);
+                }
+
                 string normalized = id.Trim();
                 if (!file.hiddenReleaseIds.Any(hiddenId =>
                         string.Equals((hiddenId ?? string.Empty).Trim(), normalized, StringComparison.Ordinal)))
@@ -250,10 +282,14 @@ namespace Orbiters.UnitGit.Editor
                 entry.date = DateTime.UtcNow.ToString("o");
             }
 
+            if (!TryLoad(service.ProjectRoot, out UnitGitReleaseFile file, out string loadError))
+            {
+                return FailUnreadableCatalog(loadError);
+            }
+
             ReleaseFileSnapshot snapshot = CaptureReleaseFileSnapshot(service);
             try
             {
-                UnitGitReleaseFile file = Load(service.ProjectRoot);
                 file.releases.Add(entry);
                 File.WriteAllText(GetReleasesFilePath(service.ProjectRoot), JsonUtility.ToJson(file, true));
             }
@@ -270,7 +306,8 @@ namespace Orbiters.UnitGit.Editor
                 service,
                 title,
                 TrailerKey + ": " + entry.id,
-                BuildReleaseCommitPaths(projectRelativePaths));
+                BuildReleaseCommitPaths(projectRelativePaths),
+                requireReleaseFile: true);
             if (!result.Success)
             {
                 if (!RestoreReleaseFileSnapshot(service, snapshot, out string rollbackMessage) &&
@@ -323,10 +360,14 @@ namespace Orbiters.UnitGit.Editor
                 entry.date = DateTime.UtcNow.ToString("o");
             }
 
+            if (!TryLoad(service.ProjectRoot, out UnitGitReleaseFile file, out string loadError))
+            {
+                return FailUnreadableCatalog(loadError);
+            }
+
             ReleaseFileSnapshot snapshot = CaptureReleaseFileSnapshot(service);
             try
             {
-                UnitGitReleaseFile file = Load(service.ProjectRoot);
                 file.releases.Add(entry);
                 File.WriteAllText(GetReleasesFilePath(service.ProjectRoot), JsonUtility.ToJson(file, true));
             }
@@ -343,7 +384,8 @@ namespace Orbiters.UnitGit.Editor
                 service,
                 title,
                 TrailerKey + ": " + entry.id,
-                notifyChangedExternally);
+                notifyChangedExternally,
+                true);
             if (!result.Success)
             {
                 if (!RestoreReleaseFileSnapshot(service, snapshot, out string rollbackMessage) &&
@@ -419,7 +461,8 @@ namespace Orbiters.UnitGit.Editor
             return result;
         }
 
-        private static UnitGitReleaseResult CommitFiles(UnitGitService service, string commitTitle, string trailingParagraph, string[] projectRelativePaths, bool notify = true, bool requireAll = false)
+        private static UnitGitReleaseResult CommitFiles(UnitGitService service, string commitTitle, string trailingParagraph, string[] projectRelativePaths,
+            bool notify = true, bool requireAll = false, bool requireReleaseFile = false)
         {
             if (string.IsNullOrWhiteSpace(commitTitle))
             {
@@ -453,6 +496,8 @@ namespace Orbiters.UnitGit.Editor
                 var included = index.FilterIgnored(paths);
                 if (requireAll && included.Length != paths.Length)
                     return Fail("Some checkpoint files are ignored by Git: " + string.Join(", ", paths.Except(included).Take(3)) + ". Update the project's ignore rules before saving.");
+                if (requireReleaseFile && Array.IndexOf(included, ReleasesFileName) < 0)
+                    return Fail(IgnoredReleaseFileMessage);
                 paths = included;
                 if (paths.Length == 0) return Fail("All requested checkpoint files are ignored by Git.");
                 var addArgs = new List<string> { "add", "--" };
@@ -637,11 +682,15 @@ namespace Orbiters.UnitGit.Editor
             return null;
         }
 
-        private static UnitGitReleaseResult StageAllAndCommit(UnitGitService service, string title, string trailingParagraph, bool notifyChangedExternally = true)
+        private static UnitGitReleaseResult StageAllAndCommit(UnitGitService service, string title, string trailingParagraph,
+            bool notifyChangedExternally = true, bool requireReleaseFile = false)
         {
             try
             {
                 using var index = new UnitGitScopedIndex(service);
+                // "add -A" silently skips ignored files; a release commit without its metadata is not a release.
+                if (requireReleaseFile && index.FilterIgnored(new[] { ReleasesFileName }).Length == 0)
+                    return Fail(IgnoredReleaseFileMessage);
                 GitCommandResult stage = index.Run("add", "-A");
                 if (!stage.Success) return Fail("Staging changes failed: " + stage.Message);
 

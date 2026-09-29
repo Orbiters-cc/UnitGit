@@ -40,54 +40,55 @@ namespace Orbiters.UnitGit.Editor
         private void PromptCreateBranch()
         {
             string defaultName = "feature/new-branch";
+            // The prompt is modeless: branch from the commit selected when it opened, not whatever is selected on submit.
+            string startPoint = selectedCommit != null && !string.IsNullOrWhiteSpace(selectedCommit.FullHash)
+                ? selectedCommit.FullHash
+                : null;
             UnitGitBranchPromptWindow.Open(defaultName, branchName =>
-            {
-                string startPoint = selectedCommit != null && !string.IsNullOrWhiteSpace(selectedCommit.FullHash)
-                    ? selectedCommit.FullHash
-                    : null;
-                RunAction("create branch " + branchName, () => gitService.CreateBranch(branchName, startPoint));
-            });
+                RunAction("create branch " + branchName, () => gitService.CreateBranch(branchName, startPoint)));
         }
 
         private void UpdateSelectedBranch()
         {
-            if (selectedBranch == null)
+            UnitGitBranch branch = selectedBranch;
+            if (branch == null)
             {
                 AppendConsole("update branch", "Select a branch first.");
                 RebuildContent();
                 return;
             }
 
-            RunAction("update " + selectedBranch.Name, () => gitService.UpdateBranch(selectedBranch));
+            RunAction("update " + branch.Name, () => gitService.UpdateBranch(branch));
         }
 
         private void DeleteSelectedBranch()
         {
-            if (selectedBranch == null)
+            UnitGitBranch branch = selectedBranch;
+            if (branch == null)
             {
                 AppendConsole("delete branch", "Select a branch first.");
                 RebuildContent();
                 return;
             }
 
-            string command = selectedBranch.IsRemote
-                ? GitCommand("branch", "-dr", selectedBranch.Name)
-                : GitCommand("branch", "-d", selectedBranch.Name);
-            string warning = selectedBranch.IsRemote
+            string command = branch.IsRemote
+                ? GitCommand("branch", "-dr", branch.Name)
+                : GitCommand("branch", "-d", branch.Name);
+            string warning = branch.IsRemote
                 ? "This deletes only the local remote-tracking branch. It does not push a remote deletion."
                 : "This removes the local branch ref. Git may refuse if the branch is not merged.";
             if (!ConfirmGitOperation(
                     "Delete Branch",
                     "Delete",
                     command,
-                    "Delete branch " + selectedBranch.Name + ".",
+                    "Delete branch " + branch.Name + ".",
                     warning,
                     0))
             {
                 return;
             }
 
-            RunAction("delete " + selectedBranch.Name, () => gitService.DeleteBranch(selectedBranch));
+            RunAction("delete " + branch.Name, () => gitService.DeleteBranch(branch));
         }
 
         private void Fetch()

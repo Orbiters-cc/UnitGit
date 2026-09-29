@@ -31,6 +31,9 @@ namespace Orbiters.UnitGit.Editor.Tests
             Run("config", "user.email", "unitgit@example.test");
             Run("config", "commit.gpgsign", "false");
             Run("config", "core.autocrlf", "false");
+            var hooks = Path.Combine(root, ".git", "audit-empty-hooks");
+            Directory.CreateDirectory(hooks);
+            Run("config", "core.hooksPath", hooks);
         }
 
         [TearDown] public void TearDown()
@@ -47,11 +50,16 @@ namespace Orbiters.UnitGit.Editor.Tests
             Assert.That(result.Success, Is.True, result.Message);
             return result.StandardOutput.Trim();
         }
-        private string Commit(string text)
+        private string Commit(string text, string file = "Assets/file.txt")
         {
-            File.WriteAllText(Path.Combine(root, "Assets/file.txt"), text);
-            Run("add", "--", "Assets/file.txt"); Run("commit", "-m", text);
+            File.WriteAllText(Path.Combine(root, file), text);
+            Run("add", "--", file); Run("commit", "-m", text);
             return Run("rev-parse", "HEAD");
+        }
+        private UnitGitHeadState Head()
+        {
+            Assert.That(git.ReadHeadState(out UnitGitHeadState state).Success, Is.True);
+            return state;
         }
 
         [TestCase(false)] [TestCase(true)]
@@ -59,6 +67,7 @@ namespace Orbiters.UnitGit.Editor.Tests
         {
             string first = Commit("first"), second = Commit("second");
             Run("branch", "other", first);
+            var head = Head();
             bool raced = false;
             git.ProcessLogReceived = line =>
             {
@@ -67,7 +76,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 var otherProcess = new UnitGitService(root);
                 Assert.That(otherProcess.RunGit(30000, "checkout", "other").Success, Is.True);
             };
-            var result = squash ? git.SquashCommits(new[] { first, second }, "rewritten") : git.RenameCommit(first, "rewritten");
+            var result = squash ? git.SquashCommits(new[] { first, second }, "rewritten", head) : git.RenameCommit(first, "rewritten", head);
             git.ProcessLogReceived = null;
             Assert.That(raced, Is.True); Assert.That(result.Success, Is.True, result.Message);
             Assert.That(Run("symbolic-ref", "--short", "HEAD"), Is.EqualTo("other"));
@@ -89,7 +98,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 Assert.That(commit.Success, Is.True, commit.Message); concurrent = commit.StandardOutput.Trim();
                 Assert.That(process.RunGit(30000, "update-ref", "refs/heads/main", concurrent, second).Success, Is.True);
             };
-            var result = git.RenameCommit(first, "renamed");
+            var result = git.RenameCommit(first, "renamed", Head());
             git.ProcessLogReceived = null;
             Assert.That(concurrent, Is.Not.Null); Assert.That(result.Success, Is.False);
             Assert.That(Run("rev-parse", "main"), Is.EqualTo(concurrent));
@@ -101,7 +110,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             string first = Commit("first"); Commit("second");
             File.WriteAllText(Path.Combine(root, "Assets/file.txt"), "staged"); Run("add", "Assets/file.txt");
             File.WriteAllText(Path.Combine(root, "Assets/file.txt"), "unstaged");
-            Assert.That(git.RenameCommit(first, "renamed").Success, Is.True);
+            Assert.That(git.RenameCommit(first, "renamed", Head()).Success, Is.True);
             Assert.That(Run("show", ":Assets/file.txt"), Is.EqualTo("staged"));
             Assert.That(File.ReadAllText(Path.Combine(root, "Assets/file.txt")), Is.EqualTo("unstaged"));
         }
@@ -207,6 +216,168 @@ namespace Orbiters.UnitGit.Editor.Tests
             Assert.That(save.Result.Success, Is.True, save.Result.Message); Assert.That(save.Result.NoChanges, Is.True);
             Assert.That(Run("rev-parse", "HEAD"), Is.EqualTo(original));
             Assert.That(File.ReadAllBytes(Path.Combine(root, ".git/index")), Is.EqualTo(index));
+        }
+
+        // base -> (main, side) -> merge; returns { base, main, side, merge }.
+        private string[] CommitMergedSideBranch()
+        {
+            string baseCommit = Commit("base");
+            Run("checkout", "-b", "side"); string side = Commit("side", "Assets/side.txt");
+            Run("checkout", "main"); string main = Commit("main");
+            Run("merge", "--no-ff", "-m", "merge side", "side");
+            return new[] { baseCommit, main, side, Run("rev-parse", "HEAD") };
+        }
+
+        [Test]
+        public void SquashRefusesMergeWhoseOtherParentIsNotSelected()
+        {
+            string[] c = CommitMergedSideBranch();
+            Run("branch", "-D", "side");
+            string refusal = null;
+            foreach (string sibling in new[] { c[1], c[2] })
+            {
+                var result = git.SquashCommits(new[] { sibling, c[3] }, "squashed", Head());
+                Assert.That(result.Success, Is.False);
+                Assert.That(Run("rev-parse", "main"), Is.EqualTo(c[3]));
+                if (result.Message.Contains("merged history")) refusal = result.Message;
+            }
+            Assert.That(refusal, Is.Not.Null, "The sibling adjacent to the merge must be refused for its unselected parent.");
+        }
+
+        [Test]
+        public void SquashOfBothMergeSidesKeepsTheirCommonParent()
+        {
+            string[] c = CommitMergedSideBranch();
+            var result = git.SquashCommits(new[] { c[1], c[2], c[3] }, "squashed", Head());
+            Assert.That(result.Success, Is.True, result.Message);
+            Assert.That(Run("rev-list", "--parents", "-n", "1", "main"), Is.EqualTo(Run("rev-parse", "main") + " " + c[0]));
+            Assert.That(Run("rev-parse", "main^{tree}"), Is.EqualTo(Run("rev-parse", c[3] + "^{tree}")));
+        }
+
+        [Test]
+        public void SquashRefusesCommitsAnotherBranchForksFrom()
+        {
+            Commit("base"); string fork = Commit("fork point");
+            Run("checkout", "-b", "side"); Commit("side", "Assets/side.txt");
+            Run("checkout", "main"); string main = Commit("main");
+            Run("merge", "--no-ff", "-m", "merge side", "side"); string merge = Run("rev-parse", "HEAD");
+            var result = git.SquashCommits(new[] { fork, main }, "squashed", Head());
+            Assert.That(result.Success, Is.False);
+            Assert.That(result.Message, Does.Contain("re-parent").Or.Contain("contiguous"));
+            Assert.That(Run("rev-parse", "main"), Is.EqualTo(merge));
+        }
+
+        [Test]
+        public void RenameKeepsMergedSideCommitsInsteadOfCopyingThem()
+        {
+            string[] c = CommitMergedSideBranch();
+            var result = git.RenameCommit(c[1], "renamed", Head());
+            Assert.That(result.Success, Is.True, result.Message);
+            Assert.That(Run("rev-parse", "main^2"), Is.EqualTo(c[2]));
+            Assert.That(Run("log", "-1", "--format=%s", "main^1"), Is.EqualTo("renamed"));
+        }
+
+        [TestCase((int)UnitGitResetMode.Hard)] [TestCase((int)UnitGitResetMode.Mixed)] [TestCase((int)UnitGitResetMode.Soft)]
+        public void ResetRefusesWhenTheConfirmedBranchIsNoLongerCheckedOut(int mode)
+        {
+            string first = Commit("first"), second = Commit("second");
+            var confirmed = Head();
+            Run("checkout", "-b", "other");
+            File.WriteAllText(Path.Combine(root, "Assets/file.txt"), "uncommitted user work");
+            var result = git.ResetCurrentBranch(first, (UnitGitResetMode)mode, confirmed);
+            Assert.That(result.Success, Is.False);
+            Assert.That(result.Message, Does.Contain("branch 'main'").And.Contain("branch 'other'"));
+            Assert.That(Run("rev-parse", "other"), Is.EqualTo(second));
+            Assert.That(Run("rev-parse", "main"), Is.EqualTo(second));
+            Assert.That(File.ReadAllText(Path.Combine(root, "Assets/file.txt")), Is.EqualTo("uncommitted user work"));
+        }
+
+        [Test]
+        public void ResetRefusesWhenHeadBecameDetachedAtTheSameCommit()
+        {
+            string first = Commit("first"), second = Commit("second");
+            var confirmed = Head();
+            Run("checkout", "--detach", second);
+            File.WriteAllText(Path.Combine(root, "Assets/file.txt"), "detached user work");
+            var result = git.ResetCurrentBranch(first, UnitGitResetMode.Hard, confirmed);
+            Assert.That(result.Success, Is.False);
+            Assert.That(Run("rev-parse", "HEAD"), Is.EqualTo(second));
+            Assert.That(File.ReadAllText(Path.Combine(root, "Assets/file.txt")), Is.EqualTo("detached user work"));
+        }
+
+        [Test]
+        public void ResetRefusesWhenTheConfirmedBranchMoved()
+        {
+            string first = Commit("first"); Commit("second");
+            var confirmed = Head();
+            string third = Commit("third");
+            var result = git.ResetCurrentBranch(first, UnitGitResetMode.Hard, confirmed);
+            Assert.That(result.Success, Is.False);
+            Assert.That(result.Message, Does.Contain("now points to"));
+            Assert.That(Run("rev-parse", "main"), Is.EqualTo(third));
+            Assert.That(File.ReadAllText(Path.Combine(root, "Assets/file.txt")), Is.EqualTo("third"));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void RewriteRefusesWhenTheConfirmedBranchIsNoLongerCheckedOut(bool squash)
+        {
+            string first = Commit("first"), second = Commit("second");
+            var confirmed = Head();
+            Run("checkout", "-b", "other");
+            var result = squash ? git.SquashCommits(new[] { first, second }, "rewritten", confirmed) : git.RenameCommit(first, "rewritten", confirmed);
+            Assert.That(result.Success, Is.False);
+            Assert.That(result.Message, Does.Contain("branch 'main'"));
+            Assert.That(Run("rev-parse", "other"), Is.EqualTo(second));
+            Assert.That(Run("rev-parse", "main"), Is.EqualTo(second));
+        }
+
+        [Test]
+        public void FileDiffTreatsBracketsInPathsLiterally()
+        {
+            string bracket = Path.Combine(root, "Assets/Material[1].mat"), plain = Path.Combine(root, "Assets/Material1.mat");
+            File.WriteAllText(bracket, "bracket"); File.WriteAllText(plain, "plain");
+            Run("add", "-A"); Run("commit", "-m", "materials");
+            File.WriteAllText(bracket, "bracket staged"); File.WriteAllText(plain, "plain staged");
+            Run("add", "-A");
+            File.WriteAllText(bracket, "bracket unstaged"); File.WriteAllText(plain, "plain unstaged");
+            var diff = git.GetFileDiff(new UnitGitStatusEntry { Path = "Assets/Material[1].mat", IndexStatus = 'M', WorkTreeStatus = 'M' });
+            Assert.That(diff.Lines.Any(line => line.Right == "bracket staged"), Is.True);
+            Assert.That(diff.Lines.Any(line => line.Right == "bracket unstaged"), Is.True);
+            Assert.That(diff.Lines.Any(line => line.Right.StartsWith("plain")), Is.False);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void ReleaseFailsWhenItsMetadataFileIsIgnored(bool all)
+        {
+            File.WriteAllText(Path.Combine(root, ".gitignore"), UnitGitReleases.ReleasesFileName + "\n");
+            string head = Commit("first");
+            File.WriteAllText(Path.Combine(root, "Assets/file.txt"), "release content");
+            var entry = new UnitGitReleaseEntry { id = "ignored-metadata", tool = "MCB", version = "1.0.0" };
+            var result = all
+                ? UnitGitReleases.PublishReleaseAll(entry, "release", git, false)
+                : UnitGitReleases.PublishRelease(entry, "release", git, "Assets/file.txt");
+            Assert.That(result.Success, Is.False);
+            Assert.That(result.Message, Does.Contain("is ignored by Git"));
+            Assert.That(Run("rev-parse", "HEAD"), Is.EqualTo(head));
+            Assert.That(File.Exists(UnitGitReleases.GetReleasesFilePath(root)), Is.False);
+        }
+
+        [TestCase(0)] [TestCase(1)] [TestCase(2)]
+        public void UnreadableReleaseCatalogIsNeverOverwritten(int operation)
+        {
+            string head = Commit("first");
+            string path = UnitGitReleases.GetReleasesFilePath(root);
+            const string conflicted = "{\"releases\":[\n<<<<<<< HEAD\n{\"id\":\"a\"}\n=======\n{\"id\":\"b\"}\n>>>>>>> other\n]}";
+            File.WriteAllText(path, conflicted);
+            File.WriteAllText(Path.Combine(root, "Assets/file.txt"), "release content");
+            var entry = new UnitGitReleaseEntry { id = "new-release" };
+            var result = operation == 0 ? UnitGitReleases.PublishRelease(entry, "release", git, "Assets/file.txt")
+                : operation == 1 ? UnitGitReleases.PublishReleaseAll(entry, "release", git, false)
+                : UnitGitReleases.HideRelease(root, "a");
+            Assert.That(result.Success, Is.False);
+            Assert.That(result.Message, Does.Contain("Could not read " + UnitGitReleases.ReleasesFileName));
+            Assert.That(File.ReadAllText(path), Is.EqualTo(conflicted));
+            Assert.That(Run("rev-parse", "HEAD"), Is.EqualTo(head));
         }
     }
 }

@@ -15,9 +15,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             try
             {
                 var service = new UnitGitService(root);
-                AssertGit(service.RunGit(30000, "init"));
-                AssertGit(service.RunGit(30000, "config", "user.email", "unitgit@example.test"));
-                AssertGit(service.RunGit(30000, "config", "user.name", "Unit Git Tests"));
+                ConfigureTempRepository(service);
                 AssertGit(service.RunGit(30000, "config", "core.quotePath", "true"));
                 AssertGit(service.RunGit(30000, "config", "commit.gpgsign", "false"));
                 const string original = "caf\u00e9.txt";
@@ -52,10 +50,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             try
             {
                 var service = new UnitGitService(root);
-                AssertGit(service.RunGit(30000, "init"));
-                AssertGit(service.RunGit(30000, "config", "user.email", "unitgit@example.test"));
-                AssertGit(service.RunGit(30000, "config", "user.name", "Unit Git Tests"));
-                AssertGit(service.RunGit(30000, "config", "core.autocrlf", "false"));
+                ConfigureTempRepository(service);
 
                 string filePath = Path.Combine(root, "file.txt");
                 File.WriteAllText(filePath, "one\nbase\n");
@@ -124,10 +119,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             try
             {
                 var service = new UnitGitService(root);
-                AssertGit(service.RunGit(30000, "init"));
-                AssertGit(service.RunGit(30000, "config", "user.email", "unitgit@example.test"));
-                AssertGit(service.RunGit(30000, "config", "user.name", "Unit Git Tests"));
-                AssertGit(service.RunGit(30000, "config", "core.autocrlf", "false"));
+                ConfigureTempRepository(service);
 
                 string assetPath = Path.Combine(root, "Assets", "file.txt");
                 File.WriteAllText(assetPath, "initial\n");
@@ -299,10 +291,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             try
             {
                 var service = new UnitGitService(root);
-                AssertGit(service.RunGit(30000, "init"));
-                AssertGit(service.RunGit(30000, "config", "user.email", "unitgit@example.test"));
-                AssertGit(service.RunGit(30000, "config", "user.name", "Unit Git Tests"));
-                AssertGit(service.RunGit(30000, "config", "core.autocrlf", "false"));
+                ConfigureTempRepository(service);
 
                 string assetPath = Path.Combine(root, "Assets", "avatar.txt");
                 string settingsPath = Path.Combine(root, "ProjectSettings", "AvatarUpload.asset");
@@ -422,7 +411,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 AssertGit(service.StageAll());
                 AssertGit(service.Commit("two"));
 
-                AssertGit(service.RenameCommit(first, "renamed one"));
+                AssertGit(service.RenameCommit(first, "renamed one", GetHeadState(service)));
 
                 GitCommandResult log = service.RunGit(30000, "log", "--format=%s");
                 AssertGit(log);
@@ -458,7 +447,7 @@ namespace Orbiters.UnitGit.Editor.Tests
 
                 File.WriteAllText(assetPath, "dirty local change\n");
 
-                AssertGit(service.RenameCommit(first, "renamed one"));
+                AssertGit(service.RenameCommit(first, "renamed one", GetHeadState(service)));
                 UnitGitSnapshot snapshot = service.BuildSnapshot(string.Empty);
 
                 Assert.That(snapshot.HasRepository, Is.True);
@@ -493,7 +482,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 AssertGit(service.Commit("two"));
                 string second = GetHead(service);
 
-                AssertGit(service.SquashCommits(new[] { first, second }, "one and two"));
+                AssertGit(service.SquashCommits(new[] { first, second }, "one and two", GetHeadState(service)));
 
                 GitCommandResult log = service.RunGit(30000, "log", "--format=%s");
                 AssertGit(log);
@@ -516,7 +505,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             try
             {
                 UnitGitService service = CreateTwoCommitRepo(softRoot, out string first, out _, out string assetPath);
-                AssertGit(service.ResetCurrentBranch(first, UnitGitResetMode.Soft));
+                AssertGit(service.ResetCurrentBranch(first, UnitGitResetMode.Soft, GetHeadState(service)));
                 Assert.That(GetPorcelainStatus(service), Does.Contain("M  Assets/file.txt"));
                 Assert.That(File.ReadAllText(assetPath), Is.EqualTo("two\n"));
             }
@@ -529,7 +518,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             try
             {
                 UnitGitService service = CreateTwoCommitRepo(mixedRoot, out string first, out _, out string assetPath);
-                AssertGit(service.ResetCurrentBranch(first, UnitGitResetMode.Mixed));
+                AssertGit(service.ResetCurrentBranch(first, UnitGitResetMode.Mixed, GetHeadState(service)));
                 Assert.That(GetPorcelainStatus(service), Does.Contain(" M Assets/file.txt"));
                 Assert.That(File.ReadAllText(assetPath), Is.EqualTo("two\n"));
             }
@@ -542,7 +531,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             try
             {
                 UnitGitService service = CreateTwoCommitRepo(hardRoot, out string first, out _, out string assetPath);
-                AssertGit(service.ResetCurrentBranch(first, UnitGitResetMode.Hard));
+                AssertGit(service.ResetCurrentBranch(first, UnitGitResetMode.Hard, GetHeadState(service)));
                 Assert.That(GetPorcelainStatus(service).Trim(), Is.Empty);
                 Assert.That(File.ReadAllText(assetPath), Is.EqualTo("one\n"));
             }
@@ -556,7 +545,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             {
                 UnitGitService service = CreateTwoCommitRepo(keepRoot, out string first, out _, out string assetPath);
                 File.WriteAllText(Path.Combine(keepRoot, "Assets", "local.txt"), "local\n");
-                AssertGit(service.ResetCurrentBranch(first, UnitGitResetMode.Keep));
+                AssertGit(service.ResetCurrentBranch(first, UnitGitResetMode.Keep, GetHeadState(service)));
                 Assert.That(GetPorcelainStatus(service), Does.Contain("?? Assets/local.txt"));
                 Assert.That(File.ReadAllText(assetPath), Is.EqualTo("one\n"));
             }
@@ -624,6 +613,16 @@ namespace Orbiters.UnitGit.Editor.Tests
             AssertGit(service.RunGit(30000, "config", "user.email", "unitgit@example.test"));
             AssertGit(service.RunGit(30000, "config", "user.name", "Unit Git Tests"));
             AssertGit(service.RunGit(30000, "config", "core.autocrlf", "false"));
+            AssertGit(service.RunGit(30000, "config", "commit.gpgsign", "false"));
+            string hooks = Path.Combine(service.ProjectRoot, ".git", "audit-empty-hooks");
+            Directory.CreateDirectory(hooks);
+            AssertGit(service.RunGit(30000, "config", "core.hooksPath", hooks));
+        }
+
+        private static UnitGitHeadState GetHeadState(UnitGitService service)
+        {
+            AssertGit(service.ReadHeadState(out UnitGitHeadState state));
+            return state;
         }
 
         private static string GetHead(UnitGitService service)

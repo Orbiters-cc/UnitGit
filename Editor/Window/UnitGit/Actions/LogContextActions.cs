@@ -83,11 +83,17 @@ namespace Orbiters.UnitGit.Editor
             }
 
             string root = gitService.ProjectRoot;
-            ReadForPrompt(() => new UnitGitService(root).GetCommitMessage(commit.FullHash),
-                result => OpenRenameCommitPrompt(commit, result));
+            UnitGitHeadState head = null;
+            ReadForPrompt(() =>
+                {
+                    var service = new UnitGitService(root);
+                    GitCommandResult state = service.ReadHeadState(out head);
+                    return state.Success ? service.GetCommitMessage(commit.FullHash) : state;
+                },
+                result => OpenRenameCommitPrompt(commit, result, head));
         }
 
-        private void OpenRenameCommitPrompt(UnitGitCommit commit, GitCommandResult messageResult)
+        private void OpenRenameCommitPrompt(UnitGitCommit commit, GitCommandResult messageResult, UnitGitHeadState head)
         {
             UnitGitCommitMessagePromptWindow.Open(
                 "Rename Commit",
@@ -117,7 +123,7 @@ namespace Orbiters.UnitGit.Editor
 
                         string hash = commit.FullHash;
                         string message = newMessage;
-                        RunAction("rename commit " + commit.ShortHash, () => gitService.RenameCommit(hash, message));
+                        RunAction("rename commit " + commit.ShortHash, () => gitService.RenameCommit(hash, message, head));
                     });
                 });
         }
@@ -129,17 +135,20 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            string branchName = snapshot != null ? snapshot.CurrentBranch : string.Empty;
-            UnitGitResetBranchPromptWindow.Open(
-                branchName,
-                gitService.ProjectRoot,
-                commit,
-                mode =>
-                {
-                    string hash = commit.FullHash;
-                    UnitGitResetMode resetMode = mode;
-                    RunAction("reset branch to " + commit.ShortHash, () => gitService.ResetCurrentBranch(hash, resetMode));
-                });
+            // The dialog is modeless: remember the branch and commit it names, and reset only while both still match.
+            string root = gitService.ProjectRoot;
+            UnitGitHeadState head = null;
+            ReadForPrompt(() => new UnitGitService(root).ReadHeadState(out head), _ =>
+                UnitGitResetBranchPromptWindow.Open(
+                    head.BranchName,
+                    root,
+                    commit,
+                    mode =>
+                    {
+                        string hash = commit.FullHash;
+                        UnitGitResetMode resetMode = mode;
+                        RunAction("reset branch to " + commit.ShortHash, () => gitService.ResetCurrentBranch(hash, resetMode, head));
+                    }));
         }
 
         private void PromptSquashSelectedCommits()
@@ -156,6 +165,13 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
+            string root = gitService.ProjectRoot;
+            UnitGitHeadState head = null;
+            ReadForPrompt(() => new UnitGitService(root).ReadHeadState(out head), _ => OpenSquashPrompt(commits, head));
+        }
+
+        private void OpenSquashPrompt(List<UnitGitCommit> commits, UnitGitHeadState head)
+        {
             string defaultMessage = BuildDefaultSquashMessage(commits);
             UnitGitCommitMessagePromptWindow.Open(
                 "Squash Commits",
@@ -185,7 +201,7 @@ namespace Orbiters.UnitGit.Editor
 
                         string[] hashes = commits.Select(commit => commit.FullHash).ToArray();
                         string message = newMessage;
-                        RunAction("squash " + commits.Count + " commits", () => gitService.SquashCommits(hashes, message));
+                        RunAction("squash " + commits.Count + " commits", () => gitService.SquashCommits(hashes, message, head));
                     });
                 });
         }
