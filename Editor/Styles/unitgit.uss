@@ -1588,3 +1588,29 @@
     justify-content: flex-end;
     align-items: center;
 }
+
+.unitgit-tab-badge {
+    min-width: 16px;
+    height: 16px;
+    margin: 0 0 0 6px;
+    padding: 0 5px;
+    border-radius: 8px;
+    background-color: #e5534b;
+    color: #ffffff;
+    font-size: 10px;
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+}
+
+.unitgit-tab--conflicts .unitgit-tab-label {
+    color: #ffb4ae;
+}
+
+.unitgit-notice--conflict {
+    background-color: rgba(229, 83, 75, 0.1);
+    border-color: rgba(229, 83, 75, 0.35);
+}
+
+.unitgit-notice--conflict .unitgit-notice__title {
+    color: #ffb4ae;
+}

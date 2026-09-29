@@ -42,8 +42,23 @@ namespace Orbiters.UnitGit.Editor
             topBar.Add(title);
 
             topBar.Add(BuildTabButton(UnitGitTab.LocalChanges, "Local Changes"));
+            if (HasConflictWork())
+            {
+                // Only while something needs resolving: a red count on the tab.
+                var conflictsTab = BuildTabButton(UnitGitTab.Conflicts, "Conflicts");
+                conflictsTab.AddToClassList("unitgit-tab--conflicts");
+                int count = Conflicted().Count;
+                if (count > 0)
+                {
+                    var badge = new Label(count.ToString());
+                    badge.AddToClassList("unitgit-tab-badge");
+                    conflictsTab.Add(badge);
+                }
+                topBar.Add(conflictsTab);
+            }
             topBar.Add(BuildTabButton(UnitGitTab.Shelf, "Shelf"));
             topBar.Add(BuildTabButton(UnitGitTab.Log, GetLogTabTitle()));
+            topBar.Add(BuildTabButton(UnitGitTab.Backups, "Backups"));
             topBar.Add(BuildTabButton(UnitGitTab.Console, "Console"));
             topBar.Add(BuildTabButton(UnitGitTab.Settings, "Settings"));
 
@@ -197,6 +212,12 @@ namespace Orbiters.UnitGit.Editor
                     break;
                 case UnitGitTab.Console:
                     contentRoot.Add(BuildConsoleBody());
+                    break;
+                case UnitGitTab.Backups:
+                    contentRoot.Add(BuildBackupsBody());
+                    break;
+                case UnitGitTab.Conflicts:
+                    contentRoot.Add(BuildConflictsBody());
                     break;
                 case UnitGitTab.Settings:
                     contentRoot.Add(BuildSettingsBody());

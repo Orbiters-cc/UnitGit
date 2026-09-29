@@ -118,6 +118,23 @@ namespace Orbiters.UnitGit.Editor
             name.AddToClassList("unitgit-file-row-name");
             row.Add(name);
 
+            // Scenes and prefabs: what this commit changed in them, object by object.
+            var details = selectedDetails;
+            if (details != null && details.Commit != null && (IsUnityYamlPath(file) || Semantic.ModelVersions.IsPreviewable(file)))
+            {
+                var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>("Packages/orbiters.unitgit/Editor/Styles/unitgit-semantic.uss");
+                if (sheet != null && !row.styleSheets.Contains(sheet)) row.styleSheets.Add(sheet);
+                var compare = new Button(() => SceneChangesWindow.Show(gitService.ProjectRoot, file, details.Commit.FullHash, details.Commit.Subject))
+                {
+                    text = "Compare",
+                    tooltip = "See what this commit changed in " + GetFileLeaf(file) + ", object by object (beta)."
+                };
+                compare.AddToClassList("ugs-compare");
+                // The row itself opens the asset: a press on Compare stays on Compare.
+                compare.RegisterCallback<PointerDownEvent>(evt => evt.StopPropagation());
+                row.Add(compare);
+            }
+
             return row;
         }
 

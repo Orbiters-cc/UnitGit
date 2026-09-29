@@ -122,6 +122,41 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
+        /// <summary>
+        /// Writes one version of a file byte for byte ("HEAD:path", ":2:path", "hash:path"): models and textures are binary,
+        /// and <see cref="RunGit"/> reads output as text. False when that version does not exist.
+        /// </summary>
+        public bool WriteBlob(string revisionPath, string destination)
+        {
+            var start = new ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = "--literal-pathspecs cat-file blob " + EscapeArgument(revisionPath),
+                WorkingDirectory = ProjectRoot,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            start.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(destination)));
+            using (var process = Process.Start(start))
+            {
+                var error = process.StandardError.ReadToEndAsync();
+                using (var file = File.Create(destination)) process.StandardOutput.BaseStream.CopyTo(file);
+                if (!process.WaitForExit(LongTimeoutMilliseconds))
+                {
+                    try { process.Kill(); } catch (InvalidOperationException) { }
+                    File.Delete(destination);
+                    return false;
+                }
+                error.Wait();
+                if (process.ExitCode == 0) return true;
+            }
+            File.Delete(destination);
+            return false;
+        }
+
         /// <summary>Stops tracking these files: they stay on disk and their removal is staged for the next commit.</summary>
         public GitCommandResult StopTracking(IList<string> paths)
         {

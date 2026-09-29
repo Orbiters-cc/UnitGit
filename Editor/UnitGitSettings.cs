@@ -22,6 +22,25 @@ namespace Orbiters.UnitGit.Editor
             set { SetBool(AvatarUploadReleaseRowKey, value); }
         }
 
+        /// <summary>Where backups go; empty means the default folder in Documents.</summary>
+        public static string BackupFolder
+        {
+            get { return EditorPrefs.GetString(BuildProjectKey("Backups.Folder"), string.Empty); }
+            set { EditorPrefs.SetString(BuildProjectKey("Backups.Folder"), value ?? string.Empty); }
+        }
+
+        public static bool AutomaticBackups
+        {
+            get { return GetBool("Backups.Automatic", false); }
+            set { SetBool("Backups.Automatic", value); }
+        }
+
+        public static int BackupsToKeep
+        {
+            get { return Math.Max(1, EditorPrefs.GetInt(BuildProjectKey("Backups.Keep"), 10)); }
+            set { EditorPrefs.SetInt(BuildProjectKey("Backups.Keep"), Math.Max(1, value)); }
+        }
+
         private static bool GetBool(string key, bool defaultValue)
         {
             return EditorPrefs.GetBool(BuildProjectKey(key), defaultValue);

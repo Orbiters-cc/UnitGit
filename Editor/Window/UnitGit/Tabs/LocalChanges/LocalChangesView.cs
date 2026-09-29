@@ -30,6 +30,27 @@ namespace Orbiters.UnitGit.Editor
             return workspace;
         }
 
+        private VisualElement BuildConflictsNotice()
+        {
+            int count = Conflicted().Count;
+            var notice = new VisualElement();
+            notice.AddToClassList("unitgit-notice");
+            notice.AddToClassList("unitgit-notice--conflict");
+            var texts = new VisualElement();
+            texts.AddToClassList("unitgit-notice__texts");
+            notice.Add(texts);
+            var title = new Label(count + " file" + (count == 1 ? " has" : "s have") + " conflicts");
+            title.AddToClassList("unitgit-notice__title");
+            texts.Add(title);
+            var body = new Label("Both sides changed the same parts. Resolve them before committing.");
+            body.AddToClassList("unitgit-notice__body");
+            texts.Add(body);
+            var button = BuildActionButton("Resolve", "unitgit-button--primary", () => SetActiveTab(UnitGitTab.Conflicts));
+            button.AddToClassList("unitgit-notice__button");
+            notice.Add(button);
+            return notice;
+        }
+
         // MCB version downloads committed before Unit Git ignored them: Git keeps tracking them until told otherwise.
         private VisualElement BuildTrackedDownloadsNotice()
         {
@@ -74,6 +95,11 @@ namespace Orbiters.UnitGit.Editor
             actions.Add(BuildActionButton("Unstage All", string.Empty, UnstageAll));
             actions.Add(BuildActionButton("Shelve", string.Empty, ShelveAll));
             pane.Add(actions);
+
+            if (Conflicted().Count > 0)
+            {
+                pane.Add(BuildConflictsNotice());
+            }
 
             if (snapshot.TrackedIgnoredDownloads.Count > 0)
             {

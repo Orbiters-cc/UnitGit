@@ -44,6 +44,9 @@ namespace Orbiters.UnitGit.Editor
             var footer = new VisualElement();
             footer.AddToClassList("unitgit-branch-footer");
             footer.Add(BuildActionButton("Checkout", string.Empty, CheckoutSelectedBranch));
+            var merge = BuildActionButton("Merge into current", string.Empty, MergeSelectedBranch);
+            merge.tooltip = "Bring the selected branch's commits into the current branch. Conflicts open in the Conflicts tab.";
+            footer.Add(merge);
             pane.Add(footer);
 
             return pane;

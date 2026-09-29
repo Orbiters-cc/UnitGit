@@ -158,7 +158,9 @@ namespace Orbiters.UnitGit.Editor
             Shelf,
             Log,
             Console,
-            Settings
+            Settings,
+            Backups,
+            Conflicts
         }
     }
 }

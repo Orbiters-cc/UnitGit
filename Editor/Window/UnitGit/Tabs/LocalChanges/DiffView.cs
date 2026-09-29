@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -22,6 +23,138 @@ namespace Orbiters.UnitGit.Editor
         private Font diffFont;
         private float diffCharacterWidth;
         private float diffColumnWidth;
+        private const string DiffModePref = "Orbiters.UnitGit.Diff.Mode";
+
+        internal enum DiffMode { Scene, Model, Text }
+
+        // Text assets Unity writes as YAML: shown object by object in the Scene view.
+        internal static bool IsUnityYamlPath(string path)
+        {
+            switch (Path.GetExtension(path ?? string.Empty).ToLowerInvariant())
+            {
+                case ".unity": case ".prefab": case ".asset": case ".mat": case ".controller": case ".anim": case ".overridecontroller": case ".mask":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        // The views a file offers: the Scene view for Unity YAML, 3D for models and prefabs, and always Text.
+        internal static List<DiffMode> ModesFor(string path)
+        {
+            var modes = new List<DiffMode>();
+            if (IsUnityYamlPath(path)) modes.Add(DiffMode.Scene);
+            if (Semantic.ModelVersions.IsPreviewable(path)) modes.Add(DiffMode.Model);
+            modes.Add(DiffMode.Text);
+            return modes;
+        }
+
+        // The last view chosen for this kind of file, or the richest one it offers.
+        internal static DiffMode ModeFor(string path)
+        {
+            var modes = ModesFor(path);
+            var saved = (DiffMode)EditorPrefs.GetInt(DiffModePref + Path.GetExtension(path ?? string.Empty).ToLowerInvariant(), (int)modes[0]);
+            return modes.Contains(saved) ? saved : modes[0];
+        }
+
+        internal static void RememberMode(string path, DiffMode mode)
+        {
+            EditorPrefs.SetInt(DiffModePref + Path.GetExtension(path ?? string.Empty).ToLowerInvariant(), (int)mode);
+        }
+
+        internal static VisualElement BuildModeSwitch(IList<DiffMode> modes, DiffMode current, Action<DiffMode> changed)
+        {
+            var group = new VisualElement();
+            group.AddToClassList("ugs-switch");
+            var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>("Packages/orbiters.unitgit/Editor/Styles/unitgit-semantic.uss");
+            if (sheet != null) group.styleSheets.Add(sheet);
+            var selected = current;
+            foreach (var option in modes)
+            {
+                var value = option;
+                var button = new Button
+                {
+                    tooltip = value == DiffMode.Scene ? "Objects, components and values that changed, as the Inspector shows them (beta)."
+                        : value == DiffMode.Model ? "Both versions in 3D, with what changed highlighted (beta)."
+                        : "The raw lines of the file."
+                };
+                button.AddToClassList("ugs-switch__option");
+                button.EnableInClassList("ugs-switch__option--on", current == value);
+                var label = new Label(value == DiffMode.Scene ? "Scene view" : value == DiffMode.Model ? "3D" : "Text");
+                label.pickingMode = PickingMode.Ignore;
+                button.Add(label);
+                if (value != DiffMode.Text)
+                {
+                    var beta = new Label("BETA");
+                    beta.AddToClassList("ugs-beta");
+                    beta.pickingMode = PickingMode.Ignore;
+                    button.Add(beta);
+                }
+                // Switches on press: the highlight moves at once, the content follows.
+                button.RegisterCallback<PointerDownEvent>(evt =>
+                {
+                    if (evt.button != 0) return;
+                    button.AddToClassList("ugs-switch__option--pressed");
+                    foreach (var other in group.Children()) other.EnableInClassList("ugs-switch__option--on", other == button);
+                    if (selected == value) return;
+                    selected = value;
+                    group.schedule.Execute(() => changed(value)).StartingIn(60);
+                }, TrickleDown.TrickleDown);
+                button.RegisterCallback<PointerUpEvent>(_ => button.RemoveFromClassList("ugs-switch__option--pressed"));
+                button.RegisterCallback<PointerLeaveEvent>(_ => button.RemoveFromClassList("ugs-switch__option--pressed"));
+                group.Add(button);
+            }
+            return group;
+        }
+
+        private VisualElement BuildLocalModelView(UnitGitStatusEntry change)
+        {
+            var view = new ModelCompareView("Repository", "Current version");
+            string root = gitService.ProjectRoot;
+            string path = change.Path;
+            string full = Path.Combine(root, path);
+            view.Load(LocalKey("model", change), root, path,
+                destination => !change.IsUntracked && new UnitGitService(root).WriteBlob("HEAD:" + path, destination),
+                destination =>
+                {
+                    if (!File.Exists(full)) return false;
+                    File.Copy(full, destination, true);
+                    return true;
+                },
+                null);
+            var scroll = new ScrollView();
+            scroll.style.flexGrow = 1;
+            scroll.Add(view);
+            return scroll;
+        }
+
+        // These exact versions: the file on disk and the commit HEAD points to.
+        private string LocalKey(string kind, UnitGitStatusEntry change)
+        {
+            string root = gitService.ProjectRoot;
+            var file = new FileInfo(Path.Combine(root, change.Path));
+            string head = Path.Combine(root, ".git", "logs", "HEAD");
+            return kind + "|local|" + root + "|" + change.Path + "|" + (file.Exists ? file.LastWriteTimeUtc.Ticks + ":" + file.Length : "deleted") +
+                "|" + (File.Exists(head) ? File.GetLastWriteTimeUtc(head).Ticks : 0);
+        }
+
+        private VisualElement BuildLocalSceneView(UnitGitStatusEntry change)
+        {
+            var view = new SemanticDiffView();
+            string root = gitService.ProjectRoot;
+            string path = change.Path;
+            string full = Path.Combine(root, path);
+            view.Load(LocalKey("scene", change),
+                () =>
+                {
+                    if (change.IsUntracked) return string.Empty;
+                    var result = new UnitGitService(root).RunGit(UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "show", "HEAD:" + path);
+                    return result.Success ? result.StandardOutput : string.Empty;
+                },
+                () => File.Exists(full) ? File.ReadAllText(full) : string.Empty,
+                "Repository", "Current version");
+            return view;
+        }
 
         private VisualElement BuildDiffViewerPane()
         {
@@ -36,6 +169,16 @@ namespace Orbiters.UnitGit.Editor
             }
             var toolbar = new VisualElement();
             toolbar.AddToClassList("unitgit-diff-toolbar");
+            var modes = change != null ? ModesFor(path) : new List<DiffMode> { DiffMode.Text };
+            var mode = change != null ? ModeFor(path) : DiffMode.Text;
+            if (modes.Count > 1)
+            {
+                toolbar.Add(BuildModeSwitch(modes, mode, value =>
+                {
+                    RememberMode(path, value);
+                    RebuildLocalDiffPane();
+                }));
+            }
             toolbar.Add(BuildDiffToolButton(UnitGitIconKind.PreviousDifference, "Previous search match", PreviousDiffSearchMatch));
             toolbar.Add(BuildDiffToolButton(UnitGitIconKind.NextDifference, "Next search match", NextDiffSearchMatch));
             toolbar.Add(BuildDiffToolButton(UnitGitIconKind.Search, "Focus diff search", () => diffSearchField?.Focus()));
@@ -64,6 +207,14 @@ namespace Orbiters.UnitGit.Editor
             diffList = null;
             diffLeftTitle = null;
             diffRightTitle = null;
+            if (mode != DiffMode.Text)
+            {
+                // The text search tools belong to the Text view.
+                foreach (var tool in toolbar.Query(className: "unitgit-diff-tool-button").ToList()) tool.style.display = DisplayStyle.None;
+                diffSearchField.style.display = DisplayStyle.None;
+                pane.Add(mode == DiffMode.Scene ? BuildLocalSceneView(change) : BuildLocalModelView(change));
+                return pane;
+            }
             if (loadedDiff == null)
             {
                 pane.Add(BuildEmptyState("Loading diff..."));
@@ -204,6 +355,12 @@ namespace Orbiters.UnitGit.Editor
                     diffList.itemsSource = loadedDiff.Lines;
                     diffCountLabel.text = loadedDiff.DifferenceCount + " differences";
                     UpdateDiffSearch(false);
+                    return;
+                }
+                // The Scene view reads the file itself: the text diff arriving only updates the count.
+                if (localDiffPaneRoot != null && (localDiffPaneRoot.Q<SemanticDiffView>() != null || localDiffPaneRoot.Q<ModelCompareView>() != null))
+                {
+                    if (diffCountLabel != null) diffCountLabel.text = loadedDiff.DifferenceCount + " differences";
                     return;
                 }
                 RememberScrollOffsets();

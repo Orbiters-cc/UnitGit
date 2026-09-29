@@ -32,6 +32,34 @@ namespace Orbiters.UnitGit.Editor
         }
 
         // Actions run on a worker thread: pass the confirmed selection, never read the live field there.
+        private void MergeSelectedBranch()
+        {
+            UnitGitBranch branch = selectedBranch;
+            if (branch == null || branch.IsCurrent)
+            {
+                AppendConsole("merge", branch == null ? "Select a branch first." : "Select another branch than the current one.");
+                RebuildContent();
+                return;
+            }
+
+            if (!ConfirmGitOperation(
+                    "Merge Branch",
+                    "Merge",
+                    GitCommand("merge", "--no-edit", "--no-ff", branch.Name),
+                    "Merge " + branch.Name + " into " + snapshot.CurrentBranch + ".",
+                    "Both histories are kept. If the same parts changed on both sides, Unit Git opens them in the Conflicts tab.",
+                    GetLocalChangeCount()))
+            {
+                return;
+            }
+
+            RunAction("merge " + branch.Name, () => UnitGitConflicts.MergeBranch(gitService, branch.Name), result =>
+            {
+                AssetDatabase.Refresh();
+                if (UnitGitConflicts.Operation(gitService.ProjectRoot, out _) != UnitGitOperation.None) activeTab = UnitGitTab.Conflicts;
+            });
+        }
+
         private void CheckoutSelectedBranch()
         {
             UnitGitBranch branch = selectedBranch;
