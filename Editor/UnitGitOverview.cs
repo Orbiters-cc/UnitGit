@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEditor;
 
@@ -69,13 +70,15 @@ namespace Orbiters.UnitGit.Editor
 
         public static void OpenWindow() => UnitGitWindow.OpenWindow();
 
-        public static Task<UnitGitSummary> LoadAsync(int commitCount = 6)
+        public static Task<UnitGitSummary> LoadAsync(int commitCount = 6, CancellationToken cancellationToken = default)
         {
             string root = ProjectRoot;
             return Task.Run(() =>
             {
-                var service = new UnitGitService(root);
+                cancellationToken.ThrowIfCancellationRequested();
+                var service = new UnitGitService(root) { ReadSuperseded = () => cancellationToken.IsCancellationRequested };
                 var summary = new UnitGitSummary { GitAvailable = service.IsGitAvailable(), HasRepository = UnitGitService.HasRepository(root) };
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!summary.GitAvailable) { summary.Error = "Git is not installed."; return summary; }
                 if (!summary.HasRepository) return summary;
 
@@ -114,8 +117,9 @@ namespace Orbiters.UnitGit.Editor
                         });
                     }
                 }
+                cancellationToken.ThrowIfCancellationRequested();
                 return summary;
-            });
+            }, cancellationToken);
         }
 
         /// <summary>Creates the history with a VRChat-ready .gitignore and a first commit of the whole project.</summary>

@@ -1,6 +1,5 @@
 using System;
 using System.Linq;
-using System.Reflection;
 using NUnit.Framework;
 
 namespace Orbiters.UnitGit.Editor.Tests
@@ -123,19 +122,6 @@ namespace Orbiters.UnitGit.Editor.Tests
             Assert.That(escaped, Is.EqualTo("\"" + path + "\""));
             Assert.That(command, Does.Contain("\"" + path + "\""));
             Assert.That(command, Does.Not.Contain(@"H:\\metaverse\\unity projects\\MCB Test"));
-        }
-
-        [Test]
-        public void UnitGitDoesNotExposePushNamedActions()
-        {
-            BindingFlags flags = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-            string[] methodNames = typeof(UnitGitWindow).GetMethods(flags)
-                .Concat(typeof(UnitGitService).GetMethods(flags))
-                .Select(method => method.Name)
-                .Where(name => name.IndexOf("Push", StringComparison.OrdinalIgnoreCase) >= 0)
-                .ToArray();
-
-            Assert.That(methodNames, Is.Empty);
         }
     }
 }

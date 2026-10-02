@@ -78,7 +78,7 @@ namespace Orbiters.UnitGit.Editor
             automatic.RegisterValueChangedCallback(evt => UnitGitSettings.AutomaticBackups = evt.newValue);
             options.Add(automatic);
             var keep = new IntegerField("Keep the last") { value = UnitGitSettings.BackupsToKeep, isDelayed = true };
-            keep.tooltip = "Older backups in this folder are deleted after a new one is made.";
+            keep.tooltip = "This project's older backups in this folder are deleted after a new one is made. Other files there are never touched.";
             keep.AddToClassList("ugb-keep");
             keep.RegisterValueChangedCallback(evt =>
             {

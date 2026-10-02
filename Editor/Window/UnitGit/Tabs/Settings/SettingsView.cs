@@ -1,17 +1,11 @@
 using System;
-using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
+using Orbiters.Toolkit.Editor;
 using Orbiters.UnitGit;
-using UnityEditor;
-using UnityEditor.SceneManagement;
-using UnityEngine;
 using UnityEngine.UIElements;
 
 namespace Orbiters.UnitGit.Editor
 {
+    // Unit Git's options as cards of switches, in My Avatar's style: each switch flips on press and saves at once.
     internal sealed partial class UnitGitWindow
     {
         private VisualElement BuildSettingsBody()
@@ -19,55 +13,70 @@ namespace Orbiters.UnitGit.Editor
             var root = new ScrollView();
             root.AddToClassList("unitgit-settings-root");
 
-            var panel = new VisualElement();
-            panel.AddToClassList("unitgit-settings-panel");
+            var header = new VisualElement();
+            header.AddToClassList("ug-settings-header");
+            header.Add(UnitGitUi.Text("Settings", "ug-settings-header__title"));
+            header.Add(UnitGitUi.Text("Saved for this project.", "ug-settings-header__text"));
+            root.Add(header);
+
+            var repository = BuildSettingsCard("Repository", UnitGitIconKind.Remote);
+            repository.Add(BuildSettingsRow("Remote", snapshot.Remotes.Count > 0 ? string.Join(", ", snapshot.Remotes) : "Not connected: Push needs one.",
+                UnitGitUi.Pill(snapshot.Remotes.Count > 0 ? "GitHub / GitLab…" : "Connect…", OpenRemoteSetup, snapshot.Remotes.Count > 0 ? null : "primary", UnitGitIconKind.Remote)));
+            repository.Add(BuildSettingsRow("Project folder", snapshot.ProjectRoot, null));
+            root.Add(repository);
 
 #if UNITGIT_VRCHAT_AVATARS
-            panel.Add(BuildSectionHeader("Settings", "VRChat avatar uploads"));
-
-            panel.Add(BuildSettingsToggle(
-                "Create commit after avatar upload",
-                UnitGitSettings.AvatarUploadCommitEnabled,
-                value =>
+            var uploads = BuildSettingsCard("VRChat avatar uploads", UnitGitIconKind.Tag);
+            ToggleSwitch releaseSwitch = null;
+            Label releaseDetail = null;
+            uploads.Add(BuildSettingsRow("Commit after each upload",
+                "Every avatar upload records the project as it was uploaded.",
+                new ToggleSwitch(UnitGitSettings.AvatarUploadCommitEnabled, value =>
                 {
                     UnitGitSettings.AvatarUploadCommitEnabled = value;
-                    RebuildContent();
-                }));
-
-            Toggle releaseRowToggle = BuildSettingsToggle(
-                "Insert avatar upload release row",
-                UnitGitSettings.AvatarUploadReleaseRowEnabled,
-                value =>
-                {
-                    UnitGitSettings.AvatarUploadReleaseRowEnabled = value;
-                    RebuildContent();
-                });
-            releaseRowToggle.SetEnabled(UnitGitSettings.AvatarUploadCommitEnabled);
-            panel.Add(releaseRowToggle);
-
-            var releaseDetail = new Label(UnitGitSettings.AvatarUploadCommitEnabled
-                ? "Release rows are linked to the avatar upload commit."
-                : "Release rows require the avatar upload commit setting.");
-            releaseDetail.AddToClassList("unitgit-settings-detail");
-            panel.Add(releaseDetail);
-#else
-            panel.Add(BuildSectionHeader("Settings", "Project options"));
-            panel.Add(BuildEmptyState("No project settings available."));
+                    releaseSwitch?.SetEnabled(value);
+                    if (releaseDetail != null) releaseDetail.text = ReleaseRowDetail();
+                })));
+            releaseSwitch = new ToggleSwitch(UnitGitSettings.AvatarUploadReleaseRowEnabled, value => UnitGitSettings.AvatarUploadReleaseRowEnabled = value);
+            releaseSwitch.SetEnabled(UnitGitSettings.AvatarUploadCommitEnabled);
+            var releaseRow = BuildSettingsRow("Show uploads in the log", ReleaseRowDetail(), releaseSwitch);
+            releaseDetail = releaseRow.Q<Label>(className: "ug-settings-row__detail");
+            uploads.Add(releaseRow);
+            root.Add(uploads);
 #endif
-
-            root.Add(panel);
             return root;
         }
 
-        private static Toggle BuildSettingsToggle(string label, bool value, Action<bool> changed)
+#if UNITGIT_VRCHAT_AVATARS
+        private static string ReleaseRowDetail() => UnitGitSettings.AvatarUploadCommitEnabled
+            ? "A row names the upload (avatar, version) above its commit."
+            : "Needs “Commit after each upload”.";
+#endif
+
+        private static VisualElement BuildSettingsCard(string title, UnitGitIconKind icon)
         {
-            var toggle = new Toggle(label)
-            {
-                value = value
-            };
-            toggle.AddToClassList("unitgit-settings-toggle");
-            toggle.RegisterValueChangedCallback(evt => changed(evt.newValue));
-            return toggle;
+            var card = new VisualElement();
+            card.AddToClassList("ug-settings-card");
+            var head = new VisualElement();
+            head.AddToClassList("ug-settings-card__head");
+            var glyph = new UnitGitIconElement(icon);
+            head.Add(glyph);
+            head.Add(UnitGitUi.Text(title, "ug-settings-card__title"));
+            card.Add(head);
+            return card;
+        }
+
+        private static VisualElement BuildSettingsRow(string title, string detail, VisualElement control)
+        {
+            var row = new VisualElement();
+            row.AddToClassList("ug-settings-row");
+            var texts = new VisualElement();
+            texts.AddToClassList("ug-settings-row__texts");
+            texts.Add(UnitGitUi.Text(title, "ug-settings-row__title"));
+            if (!string.IsNullOrEmpty(detail)) texts.Add(UnitGitUi.Text(detail, "ug-settings-row__detail"));
+            row.Add(texts);
+            if (control != null) row.Add(control);
+            return row;
         }
     }
 }

@@ -1,12 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
 using System.Linq;
-using System.Threading.Tasks;
 using Orbiters.UnitGit;
 using UnityEditor;
-using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -14,140 +10,184 @@ namespace Orbiters.UnitGit.Editor
 {
     internal sealed partial class UnitGitWindow
     {
+        private const string ShellStyleSheetPath = "Packages/orbiters.unitgit/Editor/Styles/unitgit-shell.uss";
+        private UnitGitTabs tabs;
+        private UnitGitToasts toasts;
+        private Label changesBadge;
+        private Label shelfBadge;
+        private Label conflictsBadge;
+        private Button conflictsTab;
+        private VisualElement statusArea;
+        private Label statusText;
+        private Label branchName;
+        private Label branchAhead;
+        private Label branchBehind;
+        private Button branchWidget;
+        private Button settingsButton;
+        private Button pushButton;
+
+        // Built once: tabs, badges, the branch and the busy state then change in place.
         private void BuildShell()
         {
             rootVisualElement.Clear();
             rootVisualElement.AddToClassList("unitgit-root");
-
-            var styleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(StyleSheetPath);
-            if (styleSheet != null && !rootVisualElement.styleSheets.Contains(styleSheet))
+            foreach (string path in new[] { ShellStyleSheetPath, StyleSheetPath })
             {
-                rootVisualElement.styleSheets.Add(styleSheet);
+                var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(path);
+                if (sheet != null && !rootVisualElement.styleSheets.Contains(sheet))
+                    rootVisualElement.styleSheets.Add(sheet);
             }
 
             rootVisualElement.Add(BuildTopBar());
-
             contentRoot = new VisualElement();
             contentRoot.AddToClassList("unitgit-content");
             rootVisualElement.Add(contentRoot);
+            toasts = new UnitGitToasts();
+            rootVisualElement.Add(toasts);
+            rootVisualElement.RegisterCallback<KeyDownEvent>(OnShortcut, TrickleDown.TrickleDown);
+            UpdateTopBar();
+        }
+
+        // JetBrains' Git shortcuts: Ctrl+K commit, Ctrl+Shift+K push, Ctrl+T update, F5 refresh.
+        private void OnShortcut(KeyDownEvent evt)
+        {
+            bool command = evt.ctrlKey || evt.commandKey;
+            if (command && evt.keyCode == KeyCode.K && evt.shiftKey) PushCurrentBranch();
+            else if (command && evt.keyCode == KeyCode.K)
+            {
+                if (activeTab != UnitGitTab.LocalChanges) SetActiveTab(UnitGitTab.LocalChanges);
+                rootVisualElement.schedule.Execute(() => contentRoot?.Q<TextField>(className: "unitgit-local-commit-message")?.Focus()).StartingIn(20);
+            }
+            else if (command && evt.keyCode == KeyCode.T) PullFastForward();
+            else if (evt.keyCode == KeyCode.F5) RefreshSnapshot();
+            else return;
+            evt.StopPropagation();
         }
 
         private VisualElement BuildTopBar()
         {
-            var topBar = new VisualElement();
-            topBar.AddToClassList("unitgit-topbar");
+            var bar = new VisualElement();
+            bar.AddToClassList("ug-topbar");
 
-            var title = new Label("Git");
-            title.AddToClassList("unitgit-title");
-            topBar.Add(title);
+            var brand = new VisualElement();
+            brand.AddToClassList("ug-brand");
+            var mark = new VisualElement();
+            mark.AddToClassList("ug-brand__mark");
+            mark.Add(new UnitGitIconElement(UnitGitIconKind.Branch));
+            brand.Add(mark);
+            brand.Add(UnitGitUi.Text(UnitGitInfo.DisplayName, "ug-brand__name"));
+            bar.Add(brand);
 
-            topBar.Add(BuildTabButton(UnitGitTab.LocalChanges, "Local Changes"));
-            if (HasConflictWork())
-            {
-                // Only while something needs resolving: a red count on the tab.
-                var conflictsTab = BuildTabButton(UnitGitTab.Conflicts, "Conflicts");
-                conflictsTab.AddToClassList("unitgit-tab--conflicts");
-                int count = Conflicted().Count;
-                if (count > 0)
-                {
-                    var badge = new Label(count.ToString());
-                    badge.AddToClassList("unitgit-tab-badge");
-                    conflictsTab.Add(badge);
-                }
-                topBar.Add(conflictsTab);
-            }
-            topBar.Add(BuildTabButton(UnitGitTab.Shelf, "Shelf"));
-            topBar.Add(BuildTabButton(UnitGitTab.Log, GetLogTabTitle()));
-            topBar.Add(BuildTabButton(UnitGitTab.Backups, "Backups"));
-            topBar.Add(BuildTabButton(UnitGitTab.Console, "Console"));
-            topBar.Add(BuildTabButton(UnitGitTab.Settings, "Settings"));
+            tabs = new UnitGitTabs();
+            tabs.Add(UnitGitTab.LocalChanges.ToString(), "Changes", UnitGitIconKind.Changes, () => SetActiveTab(UnitGitTab.LocalChanges),
+                changesBadge = UnitGitUi.Badge(0)).tooltip = "What changed since the last commit, and the commit (Ctrl+K)";
+            conflictsTab = tabs.Add(UnitGitTab.Conflicts.ToString(), "Conflicts", UnitGitIconKind.Conflict, () => SetActiveTab(UnitGitTab.Conflicts),
+                conflictsBadge = UnitGitUi.Badge(0, "danger"));
+            conflictsTab.AddToClassList("ug-tab--conflicts");
+            tabs.Add(UnitGitTab.Log.ToString(), "Log", UnitGitIconKind.Log, () => SetActiveTab(UnitGitTab.Log));
+            tabs.Add(UnitGitTab.Shelf.ToString(), "Shelf", UnitGitIconKind.Shelve, () => SetActiveTab(UnitGitTab.Shelf), shelfBadge = UnitGitUi.Badge(0));
+            tabs.Add(UnitGitTab.Backups.ToString(), "Backups", UnitGitIconKind.Backup, () => SetActiveTab(UnitGitTab.Backups));
+            tabs.Add(UnitGitTab.Console.ToString(), "Console", UnitGitIconKind.Console, () => SetActiveTab(UnitGitTab.Console));
+            bar.Add(tabs);
 
-            var spacer = new VisualElement();
-            spacer.AddToClassList("unitgit-spacer");
-            topBar.Add(spacer);
+            bar.Add(UnitGitUi.Spacer());
 
-            var status = new Label(busy ? "running git..." : GetTopStatusText());
-            status.AddToClassList("unitgit-top-status");
-            topBar.Add(status);
+            statusArea = new VisualElement();
+            statusArea.AddToClassList("ug-status");
+            statusArea.Add(UnitGitUi.Spinner());
+            statusText = UnitGitUi.Text(string.Empty, "ug-status__text");
+            statusArea.Add(statusText);
+            bar.Add(statusArea);
 
-            return topBar;
+            branchWidget = new Button { tooltip = "Branches: checkout, create, merge…" };
+            branchWidget.AddToClassList("ug-branch-widget");
+            branchWidget.Add(new UnitGitIconElement(UnitGitIconKind.Branch));
+            branchName = UnitGitUi.Text(string.Empty, "ug-branch-widget__name");
+            branchWidget.Add(branchName);
+            branchAhead = UnitGitUi.Text(string.Empty, "ug-branch-widget__sync");
+            branchAhead.AddToClassList("ug-branch-widget__sync--ahead");
+            branchAhead.tooltip = "Commits to push";
+            branchWidget.Add(branchAhead);
+            branchBehind = UnitGitUi.Text(string.Empty, "ug-branch-widget__sync");
+            branchBehind.AddToClassList("ug-branch-widget__sync--behind");
+            branchBehind.tooltip = "Commits to pull";
+            branchWidget.Add(branchBehind);
+            var chevron = new UnitGitIconElement(UnitGitIconKind.ChevronExpanded);
+            chevron.AddToClassList("ug-branch-widget__chevron");
+            branchWidget.Add(chevron);
+            UnitGitUi.Press(branchWidget, ShowBranchPopup);
+            bar.Add(branchWidget);
+
+            var actions = new VisualElement();
+            actions.AddToClassList("ug-topbar__actions");
+            actions.Add(UnitGitUi.Icon(UnitGitIconKind.Pull, "Update: pull the current branch, fast-forward only (Ctrl+T)", PullFastForward));
+            pushButton = UnitGitUi.Icon(UnitGitIconKind.Push, "Push the current branch (Ctrl+Shift+K)", PushCurrentBranch);
+            actions.Add(pushButton);
+            actions.Add(UnitGitUi.Icon(UnitGitIconKind.Fetch, "Fetch from every remote", Fetch));
+            actions.Add(UnitGitUi.Icon(UnitGitIconKind.Refresh, "Refresh (F5)", RefreshSnapshot));
+            actions.Add(UnitGitUi.Separator());
+            settingsButton = UnitGitUi.Icon(UnitGitIconKind.Settings, "Settings", () => SetActiveTab(activeTab == UnitGitTab.Settings ? UnitGitTab.Log : UnitGitTab.Settings));
+            actions.Add(settingsButton);
+            bar.Add(actions);
+            return bar;
         }
 
-        private void RefreshTopBar()
+        // Badges, the branch, the busy state and the chosen tab, without rebuilding the bar.
+        private void UpdateTopBar()
         {
-            var bar = rootVisualElement.Q(className: "unitgit-topbar");
-            if (bar != null)
-                bar.RemoveFromHierarchy();
-            rootVisualElement.Insert(0, BuildTopBar());
+            if (tabs == null) return;
+            bool ready = snapshot != null && snapshot.HasRepository && snapshot.HasCommits && string.IsNullOrWhiteSpace(snapshot.LastError);
+            int changes = ready ? snapshot.Changes.Count : 0;
+            changesBadge.text = changes > 999 ? "999+" : changes.ToString();
+            changesBadge.style.display = changes > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+            int shelves = ready && snapshot.Shelves != null ? snapshot.Shelves.Count : 0;
+            shelfBadge.text = shelves.ToString();
+            shelfBadge.style.display = shelves > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+            bool conflicts = ready && HasConflictWork();
+            conflictsTab.style.display = conflicts || activeTab == UnitGitTab.Conflicts ? DisplayStyle.Flex : DisplayStyle.None;
+            int conflicted = conflicts ? Conflicted().Count : 0;
+            conflictsBadge.text = conflicted.ToString();
+            conflictsBadge.style.display = conflicted > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+
+            tabs.Select(activeTab == UnitGitTab.Settings ? null : activeTab.ToString());
+            settingsButton.EnableInClassList("ug-icon-button--on", activeTab == UnitGitTab.Settings);
+
+            branchWidget.style.display = ready ? DisplayStyle.Flex : DisplayStyle.None;
+            if (ready)
+            {
+                string branch = string.IsNullOrWhiteSpace(snapshot.CurrentBranch) ? "detached HEAD" : snapshot.CurrentBranch;
+                branchName.text = branch;
+                branchWidget.tooltip = branch + (snapshot.Ahead > 0 || snapshot.Behind > 0
+                    ? "  (" + snapshot.Ahead + " to push, " + snapshot.Behind + " to pull)" : string.Empty) + "\nClick for branches: checkout, create, merge…";
+                branchAhead.text = snapshot.Ahead > 0 ? "↑" + snapshot.Ahead : string.Empty;
+                branchAhead.style.display = snapshot.Ahead > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+                branchBehind.text = snapshot.Behind > 0 ? "↓" + snapshot.Behind : string.Empty;
+                branchBehind.style.display = snapshot.Behind > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+            }
+
+            string status = busy ? (string.IsNullOrEmpty(busyLabel) ? "Working…" : busyLabel)
+                : commitWhenIncluded != null ? (commitWhenIncluded.Value ? "Committing and pushing…" : "Committing…")
+                : refreshingSnapshot && snapshot == null ? "Reading the repository…" : string.Empty;
+            statusText.text = status;
+            statusArea.EnableInClassList("ug-status--idle", string.IsNullOrEmpty(status));
+            foreach (var button in rootVisualElement.Query<Button>(className: "ug-icon-button").ToList())
+                if (button.parent != null && button.parent.ClassListContains("ug-topbar__actions") && button != settingsButton)
+                    button.SetEnabled(ready && !busy && commitWhenIncluded == null);
         }
 
-        private Button BuildTabButton(UnitGitTab tab, string text)
-        {
-            var button = new Button(() => SetActiveTab(tab));
-            button.AddToClassList("unitgit-tab");
-            if (activeTab == tab)
-            {
-                button.AddToClassList("unitgit-tab--active");
-            }
-
-            var label = new Label(text);
-            label.AddToClassList("unitgit-tab-label");
-            button.Add(label);
-
-            return button;
-        }
-
-        private string GetLogTabTitle()
-        {
-            string branch = snapshot != null && !string.IsNullOrWhiteSpace(snapshot.CurrentBranch)
-                ? snapshot.CurrentBranch
-                : "Log";
-
-            if (branch.Length > 24)
-            {
-                branch = branch.Substring(0, 21) + "...";
-            }
-
-            return "Log: " + branch;
-        }
-
-        private string GetTopStatusText()
-        {
-            if (snapshot == null)
-            {
-                return string.Empty;
-            }
-
-            if (!snapshot.GitAvailable)
-            {
-                return "Git unavailable";
-            }
-
-            if (!snapshot.IsUnityProject)
-            {
-                return "No Unity project";
-            }
-
-            if (!snapshot.HasRepository)
-            {
-                return "No root repo";
-            }
-
-            string tracking = string.Empty;
-            if (snapshot.Ahead > 0 || snapshot.Behind > 0)
-            {
-                tracking = "  ahead " + snapshot.Ahead + " / behind " + snapshot.Behind;
-            }
-
-            return snapshot.CurrentBranch + tracking;
-        }
+        private void RefreshTopBar() => UpdateTopBar();
 
         private void SetActiveTab(UnitGitTab tab)
         {
+            bool changed = activeTab != tab;
             activeTab = tab;
-            BuildShell();
+            UpdateTopBar();
             RebuildContent();
+            if (changed && contentRoot != null) UnitGitUi.Enter(contentRoot, "unitgit-content--enter");
         }
+
+        private void ShowToast(string text, bool error = false, string actionText = null, Action action = null) =>
+            toasts?.Show(text, error, actionText, action);
 
         private void RebuildContent()
         {
@@ -158,6 +198,7 @@ namespace Orbiters.UnitGit.Editor
 
             localChangesListRoot = null;
             localDiffPaneRoot = null;
+            changesNoticesRoot = null;
             commitDetailsRoot = null;
             contentRoot.Clear();
 
@@ -190,7 +231,7 @@ namespace Orbiters.UnitGit.Editor
                 VisualElement panel = BuildMessagePanel("Git state unavailable", snapshot.LastError);
                 var actions = new VisualElement();
                 actions.AddToClassList("unitgit-message-actions");
-                actions.Add(BuildActionButton("Refresh", "unitgit-button--primary", RefreshSnapshot));
+                actions.Add(UnitGitUi.Pill("Try again", RefreshSnapshot, "primary", UnitGitIconKind.Refresh));
                 panel.Add(actions);
                 contentRoot.Add(panel);
                 return;
@@ -253,8 +294,8 @@ namespace Orbiters.UnitGit.Editor
 
             var actions = new VisualElement();
             actions.AddToClassList("unitgit-message-actions");
-            actions.Add(BuildActionButton(hasPartialRepository ? "Create First Commit" : "Initialize Project Git", "unitgit-button--primary", InitializeProjectGit));
-            actions.Add(BuildActionButton("Refresh", string.Empty, RefreshSnapshot));
+            actions.Add(UnitGitUi.Pill(hasPartialRepository ? "Create first commit" : "Initialize Git", InitializeProjectGit, "primary", UnitGitIconKind.Commit));
+            actions.Add(UnitGitUi.Pill("Refresh", RefreshSnapshot, null, UnitGitIconKind.Refresh));
             panel.Add(actions);
 
             return panel;

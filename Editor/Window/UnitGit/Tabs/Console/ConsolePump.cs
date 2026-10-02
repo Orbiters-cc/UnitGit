@@ -80,12 +80,8 @@ namespace Orbiters.UnitGit.Editor
                 EditorApplication.update -= DrainEditorQueues;
             }
 
-            if (changed && (activeTab == UnitGitTab.Console || activeTab == UnitGitTab.Shelf))
-            {
-                RememberScrollOffsets();
-                RebuildContent();
-                RestoreScrollOffsets();
-            }
+            if (changed && activeTab == UnitGitTab.Console)
+                RefreshConsole(scrollToEnd: false);
         }
 
         private void AddConsoleLine(string line)
@@ -119,6 +115,8 @@ namespace Orbiters.UnitGit.Editor
                 return string.Empty;
             }
 
+            // Remote URLs and Git's errors can carry a token: the console never shows one.
+            message = UnitGitRedaction.Redact(message);
             bool hasControlCharacter = false;
             for (int i = 0; i < message.Length; i++)
             {

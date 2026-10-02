@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using UnityEngine;
+using Orbiters.Toolkit.Editor.Processes;
 
 namespace Orbiters.UnitGit.Editor
 {
@@ -17,8 +19,21 @@ namespace Orbiters.UnitGit.Editor
         private const int BinarySniffBytes = 4096;
         internal const int DefaultTimeoutMilliseconds = 30000;
         public const int LongTimeoutMilliseconds = 900000;
+        // Windows stops a command line at 32k characters: path lists go to Git in batches well below that.
+        private const int MaxPathsPerCommand = 200;
+        private const int MaxPathCharactersPerCommand = 8000;
+        private const string NoTextualDifferences = "No textual differences to display.";
+        private const string ReleaseTrailerFormat = "%(trailers:key=" + UnitGitReleases.TrailerKey + ",valueonly,separator=%x2C)";
+        // Git writes UTF-8 (content, messages, quoted paths); the system code page would garble anything beyond ASCII.
+        private static readonly Encoding Utf8 = new UTF8Encoding(false);
         private static readonly Regex AheadRegex = new Regex(@"ahead\s+(\d+)", RegexOptions.Compiled);
         private static readonly Regex BehindRegex = new Regex(@"behind\s+(\d+)", RegexOptions.Compiled);
+        // Git's extended header lines between "diff --git" and the first hunk.
+        private static readonly string[] DiffHeaderPrefixes =
+        {
+            "index ", "--- ", "+++ ", "new file mode ", "deleted file mode ", "old mode ", "new mode ",
+            "similarity index ", "dissimilarity index ", "rename from ", "rename to ", "copy from ", "copy to "
+        };
 
         private sealed class CommitRewriteInfo
         {
@@ -48,6 +63,11 @@ namespace Orbiters.UnitGit.Editor
 
         public UnitGitSnapshot BuildSnapshot(string logSearch, int historyLimit = 300)
         {
+            return BuildSnapshot(logSearch, historyLimit, null);
+        }
+
+        public UnitGitSnapshot BuildSnapshot(string logSearch, int historyLimit, UnitGitLogFilter filter)
+        {
             var snapshot = new UnitGitSnapshot
             {
                 ProjectRoot = ProjectRoot,
@@ -76,7 +96,9 @@ namespace Orbiters.UnitGit.Editor
 
             UnitGitProjectInitializer.EnsureDefaultRules(ProjectRoot);
 
-            var status = RunGit(DefaultTimeoutMilliseconds, "status", "--porcelain=v1", "-b", "-uall");
+            // Exact renames only (a file moved unchanged, as Unity moves assets): guessing renames from similar content reads
+            // every added and deleted file, which takes many seconds with big textures and models.
+            var status = RunGit(DefaultTimeoutMilliseconds, "status", "--porcelain=v1", "-b", "-uall", "--find-renames=100%");
             if (!status.Success)
             {
                 snapshot.HasCommits = HasCommits();
@@ -88,11 +110,12 @@ namespace Orbiters.UnitGit.Editor
             ParseStatus(status.StandardOutput, snapshot);
             snapshot.ChangeList = UnitGitFileList.FromChanges(snapshot.Changes);
             snapshot.Branches = GetBranches();
+            snapshot.Remotes = GetRemoteNames();
             snapshot.Releases = UnitGitReleases.Load(ProjectRoot);
             if (snapshot.HasCommits)
             {
                 historyLimit = Math.Max(1, historyLimit);
-                snapshot.Commits = GetCommits(logSearch, historyLimit + 1);
+                snapshot.Commits = GetCommits(logSearch, historyLimit + 1, filter);
                 snapshot.HasMoreCommits = snapshot.Commits.Count > historyLimit;
                 if (snapshot.HasMoreCommits) snapshot.Commits.RemoveAt(historyLimit);
                 var message = GetHeadCommitMessage();
@@ -139,37 +162,107 @@ namespace Orbiters.UnitGit.Editor
                 CreateNoWindow = true
             };
             start.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
+            start.EnvironmentVariables["GIT_OPTIONAL_LOCKS"] = "0";
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(destination)));
-            using (var process = Process.Start(start))
+            bool complete = false;
+            try
             {
-                var error = process.StandardError.ReadToEndAsync();
-                using (var file = File.Create(destination)) process.StandardOutput.BaseStream.CopyTo(file);
-                if (!process.WaitForExit(LongTimeoutMilliseconds))
+                EditorProcessResult result;
+                using (var file = File.Create(destination))
                 {
-                    try { process.Kill(); } catch (InvalidOperationException) { }
-                    File.Delete(destination);
-                    return false;
+                    result = EditorProcessRunner.Run(start, LongTimeoutMilliseconds, standardOutputDestination: file);
                 }
-                error.Wait();
-                if (process.ExitCode == 0) return true;
+                complete = result.Success;
+                return complete;
             }
-            File.Delete(destination);
-            return false;
+            finally
+            {
+                if (!complete) File.Delete(destination);
+            }
         }
 
         /// <summary>Stops tracking these files: they stay on disk and their removal is staged for the next commit.</summary>
         public GitCommandResult StopTracking(IList<string> paths)
         {
-            var result = new GitCommandResult { ExitCode = 0 };
-            for (int start = 0; start < paths.Count; start += 50)
-            {
-                var args = new List<string> { "rm", "--cached", "--quiet", "--ignore-unmatch", "--" };
-                for (int i = start; i < Math.Min(paths.Count, start + 50); i++) args.Add(paths[i]);
-                result = RunGit(LongTimeoutMilliseconds, args.ToArray());
-                if (!result.Success) return result;
-            }
-            result.StandardOutput = "Stopped tracking " + paths.Count + " files. They stay on disk; commit to record it.";
+            var result = RunGitForPaths(LongTimeoutMilliseconds, paths, "rm", "--cached", "--quiet", "--ignore-unmatch");
+            if (result.Success)
+                result.StandardOutput = "Stopped tracking " + paths.Count + " files. They stay on disk; commit to record it.";
             return result;
+        }
+
+        /// <summary>Includes these files in the next commit as they are on disk, deletions included.</summary>
+        public GitCommandResult Stage(IList<string> paths)
+        {
+            List<string> selected = SelectedPaths(paths);
+            if (selected.Count == 0)
+                return Failure("No files selected.");
+            return RunGitForPaths(LongTimeoutMilliseconds, selected, "add", "-A");
+        }
+
+        /// <summary>Leaves these files out of the next commit again. Their content on disk is unchanged.</summary>
+        public GitCommandResult Unstage(IList<string> paths)
+        {
+            List<string> selected = SelectedPaths(paths);
+            if (selected.Count == 0)
+                return Failure("No files selected.");
+            if (HasCommits())
+                return RunGitForPaths(LongTimeoutMilliseconds, selected, "reset", "-q", "HEAD");
+            // Before the first commit there is no HEAD to reset to: everything staged is new. --cached keeps the files on disk.
+            return RunGitForPaths(LongTimeoutMilliseconds, selected, "rm", "--cached", "-r", "-f", "-q", "--ignore-unmatch");
+        }
+
+        /// <summary>
+        /// Discards the local changes of tracked files: the last commit's version comes back, staged and on disk. Files that
+        /// were only added to the index become untracked again and stay on disk. Untracked files are never touched; pass
+        /// both paths of a rename.
+        /// </summary>
+        public GitCommandResult Rollback(IList<string> paths)
+        {
+            List<string> selected = SelectedPaths(paths);
+            if (selected.Count == 0)
+                return Failure("No files selected.");
+
+            // Only paths Git lists are passed on, so a selected untracked file never reaches restore (which would fail) or rm.
+            var committed = new List<string>();
+            if (HasCommits())
+            {
+                GitCommandResult listed = ListPaths(selected, committed, "ls-tree", "-r", "--name-only", "HEAD");
+                if (!listed.Success)
+                    return listed;
+            }
+
+            var indexed = new List<string>();
+            GitCommandResult index = ListPaths(selected, indexed, "ls-files", "--cached");
+            if (!index.Success)
+                return index;
+
+            var inHead = new HashSet<string>(committed, StringComparer.Ordinal);
+            List<string> added = indexed.Where(path => !inHead.Contains(path)).Distinct(StringComparer.Ordinal).ToList();
+            if (committed.Count > 0)
+            {
+                GitCommandResult restored = RunGitForPaths(LongTimeoutMilliseconds, committed, "restore", "--source=HEAD", "--staged", "--worktree");
+                if (!restored.Success)
+                    return restored;
+            }
+
+            if (added.Count > 0)
+            {
+                // Not in HEAD, so restore would delete them from disk. -f: dropping the staged content is the point of a rollback.
+                GitCommandResult removed = RunGitForPaths(LongTimeoutMilliseconds, added, "rm", "--cached", "-f", "-q");
+                if (!removed.Success)
+                    return removed;
+            }
+
+            if (committed.Count == 0 && added.Count == 0)
+                return new GitCommandResult { StandardOutput = "Nothing to roll back: the selected files are not tracked." };
+
+            var message = new StringBuilder();
+            if (committed.Count > 0)
+                message.Append("Rolled back ").Append(Plural(committed.Count, "file")).Append(" to the last commit.");
+            if (added.Count > 0)
+                message.Append(message.Length > 0 ? " " : string.Empty)
+                    .Append("Untracked again and kept on disk: ").Append(Plural(added.Count, "added file")).Append('.');
+            return new GitCommandResult { StandardOutput = message.ToString() };
         }
 
         public UnitGitCommitDetails GetCommitDetails(string fullHash)
@@ -179,26 +272,26 @@ namespace Orbiters.UnitGit.Editor
                 return null;
             }
 
-            var result = RunGit(
-                DefaultTimeoutMilliseconds,
+            // Quoted paths keep the file list ASCII whatever the output encoding, and tabs inside names escaped.
+            var args = new List<string>
+            {
+                "-c",
+                "core.quotePath=true",
                 "show",
                 "--no-ext-diff",
-                "--name-only",
+                "--name-status",
+                "-M",
                 "--date=format-local:%m/%d/%Y %I:%M %p",
-                "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ad%x1f%D%x1f%cn%x1f%ce%x1f%cd%x1f%(trailers:key=" + UnitGitReleases.TrailerKey + ",valueonly,separator=%x2C)",
-                fullHash);
+                "--pretty=format:" + CommitDetailsFormat(true),
+                fullHash
+            };
+            var result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
 
             if (!result.Success)
             {
                 // Older Git versions do not support the %(trailers) pretty-format placeholder.
-                result = RunGit(
-                    DefaultTimeoutMilliseconds,
-                    "show",
-                    "--no-ext-diff",
-                    "--name-only",
-                    "--date=format-local:%m/%d/%Y %I:%M %p",
-                    "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ad%x1f%D%x1f%cn%x1f%ce%x1f%cd",
-                    fullHash);
+                args[args.Count - 2] = "--pretty=format:" + CommitDetailsFormat(false);
+                result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
             }
 
             if (!result.Success)
@@ -213,13 +306,27 @@ namespace Orbiters.UnitGit.Editor
                 };
             }
 
-            var lines = SplitLines(result.StandardOutput).ToList();
-            if (lines.Count == 0)
+            return ParseCommitDetails(result.StandardOutput);
+        }
+
+        // Header fields, then the body, then a NUL: the body may span lines, and the file list follows it.
+        private static string CommitDetailsFormat(bool withTrailers)
+        {
+            return "%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ad%x1f%D%x1f%cn%x1f%ce%x1f%cd%x1f" +
+                   (withTrailers ? ReleaseTrailerFormat : string.Empty) + "%x1f%P%x1f%at%x1f%b%x00";
+        }
+
+        internal static UnitGitCommitDetails ParseCommitDetails(string output)
+        {
+            if (string.IsNullOrEmpty(output))
             {
                 return null;
             }
 
-            var fields = lines[0].Split(FieldSeparator);
+            int headerEnd = output.IndexOf('\0');
+            string header = headerEnd >= 0 ? output.Substring(0, headerEnd) : output;
+            string files = headerEnd >= 0 ? output.Substring(headerEnd + 1) : string.Empty;
+            var fields = header.Split(new[] { FieldSeparator }, 14);
             var details = new UnitGitCommitDetails();
             if (fields.Length >= 10)
             {
@@ -231,39 +338,35 @@ namespace Orbiters.UnitGit.Editor
                     AuthorName = fields[3],
                     AuthorEmail = fields[4],
                     Decorations = fields[6],
-                    ReleaseId = fields.Length >= 11 ? fields[10].Trim() : string.Empty
+                    ReleaseId = fields.Length >= 11 ? fields[10].Trim() : string.Empty,
+                    Parents = fields.Length >= 12 ? ParseParents(fields[11]) : Array.Empty<string>(),
+                    Timestamp = fields.Length >= 13 ? ParseTimestamp(fields[12]) : 0
                 };
                 details.AuthorDate = fields[5];
                 details.CommitterName = fields[7];
                 details.CommitterEmail = fields[8];
                 details.CommitterDate = fields[9];
+                details.Body = fields.Length >= 14 ? fields[13].Replace("\r\n", "\n").Trim() : string.Empty;
             }
 
-            bool seenBlank = false;
-            for (int i = 1; i < lines.Count; i++)
+            // --name-status lines: "M<TAB>path", "R100<TAB>old<TAB>new". Merges list one letter per parent ("MM<TAB>path").
+            foreach (string line in SplitLines(files))
             {
-                string line = lines[i];
-                if (!seenBlank && string.IsNullOrWhiteSpace(line))
+                string[] parts = line.Split('\t');
+                if (parts.Length < 2 || parts[0].Length == 0)
                 {
-                    seenBlank = true;
                     continue;
                 }
 
-                if (seenBlank && !string.IsNullOrWhiteSpace(line))
+                char status = parts[0][0];
+                string path = UnquotePath((status == 'R' || status == 'C') && parts.Length >= 3 ? parts[2] : parts[1]);
+                if (path.Length == 0 || details.FileStatus.ContainsKey(path))
                 {
-                    details.ChangedFiles.Add(line.Trim());
+                    continue;
                 }
-            }
 
-            if (details.ChangedFiles.Count == 0)
-            {
-                foreach (string line in lines.Skip(1))
-                {
-                    if (!string.IsNullOrWhiteSpace(line))
-                    {
-                        details.ChangedFiles.Add(line.Trim());
-                    }
-                }
+                details.ChangedFiles.Add(path);
+                details.FileStatus[path] = status;
             }
 
             return details;
@@ -287,6 +390,100 @@ namespace Orbiters.UnitGit.Editor
             }
 
             return RunGit(LongTimeoutMilliseconds, "pull", "--ff-only");
+        }
+
+        /// <summary>
+        /// Pushes the current branch. A branch without upstream is published to origin (else the first remote) and
+        /// starts tracking it there. Never forces.
+        /// </summary>
+        public GitCommandResult Push()
+        {
+            List<string> remotes = GetRemoteNames();
+            if (remotes.Count == 0)
+            {
+                return Failure("This repository has no remote. Set one up first.");
+            }
+
+            // The full ref: --short would print "heads/main" when a tag is also called main.
+            GitCommandResult branchResult = RunGit(DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
+            string branchRef = branchResult.Success ? FirstNonEmptyLine(branchResult.StandardOutput) : string.Empty;
+            if (!branchRef.StartsWith("refs/heads/", StringComparison.Ordinal))
+            {
+                return Failure("Check out a branch before pushing.");
+            }
+
+            string branch = branchRef.Substring("refs/heads/".Length);
+
+            // The configured upstream, even when its remote branch was deleted since: push recreates it there.
+            GitCommandResult upstream = RunGit(DefaultTimeoutMilliseconds, "config", "--get", "branch." + branch + ".merge");
+            if (upstream.Success && FirstNonEmptyLine(upstream.StandardOutput).Length > 0)
+            {
+                return RunGit(LongTimeoutMilliseconds, "push");
+            }
+
+            string remote = remotes.FirstOrDefault(name => name == "origin") ?? remotes[0];
+            return RunGit(LongTimeoutMilliseconds, "push", "-u", remote, branch);
+        }
+
+        /// <summary>Copies a commit onto the current branch. Conflicts fail and leave Git's cherry-pick in progress.</summary>
+        public GitCommandResult CherryPick(string fullHash)
+        {
+            return ApplyCommit(fullHash, UnitGitOperation.CherryPick, "cherry-pick");
+        }
+
+        /// <summary>Adds a commit that undoes this one. Conflicts fail and leave Git's revert in progress.</summary>
+        public GitCommandResult RevertCommit(string fullHash)
+        {
+            return ApplyCommit(fullHash, UnitGitOperation.Revert, "revert", "--no-edit");
+        }
+
+        private GitCommandResult ApplyCommit(string fullHash, UnitGitOperation operation, params string[] command)
+        {
+            GitCommandResult resolved = ResolveCommit(fullHash, out string hash);
+            if (!resolved.Success)
+            {
+                return resolved;
+            }
+
+            if (UnitGitConflicts.Operation(ProjectRoot, out string current) != UnitGitOperation.None)
+            {
+                return Failure("Finish or cancel the current operation first (" + current + ").");
+            }
+
+            var args = new List<string>(command) { hash };
+            GitCommandResult result = RunGit(LongTimeoutMilliseconds, args.ToArray());
+            if (result.Success || UnitGitConflicts.Operation(ProjectRoot, out _) != operation)
+            {
+                return result;
+            }
+
+            // Git stops on an empty result too (the changes are already here). Nothing conflicts and nothing is staged:
+            // cancel it rather than leave an operation with nothing to resolve.
+            bool conflicted = RunGit(DefaultTimeoutMilliseconds, "ls-files", "-u").StandardOutput.Trim().Length > 0;
+            bool staged = RunGit(DefaultTimeoutMilliseconds, "diff", "--cached", "--quiet").ExitCode != 0;
+            if (conflicted || staged)
+            {
+                return result;
+            }
+
+            GitCommandResult abort = RunGit(LongTimeoutMilliseconds, command[0], "--abort");
+            return abort.Success
+                ? Failure("Nothing to apply: the changes of " + ShortHash(hash) + " are already on this branch.")
+                : abort;
+        }
+
+        // The full hash of a commit, refusing text Git would read as an option.
+        private GitCommandResult ResolveCommit(string revision, out string fullHash)
+        {
+            fullHash = string.Empty;
+            if (string.IsNullOrWhiteSpace(revision) || revision.Trim().StartsWith("-", StringComparison.Ordinal))
+            {
+                return Failure("Select a commit first.");
+            }
+
+            GitCommandResult resolved = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", revision.Trim() + "^{commit}");
+            fullHash = resolved.Success ? FirstNonEmptyLine(resolved.StandardOutput) : string.Empty;
+            return fullHash.Length > 0 ? resolved : Failure("Commit " + ShortHash(revision) + " was not found.");
         }
 
         public GitCommandResult StageAll()
@@ -807,16 +1004,18 @@ namespace Orbiters.UnitGit.Editor
             return result;
         }
 
-        public UnitGitDiff GetFileDiff(UnitGitStatusEntry change)
+        public UnitGitDiff GetFileDiff(UnitGitStatusEntry change) => GetFileDiff(change, UnitGitWhitespace.None);
+
+        /// <summary>
+        /// A changed file against its last commit, whole when it is not huge (so the viewer can fold and unfold what did not
+        /// change), with the chosen whitespace ignored. Staged and unstaged changes show as two sections.
+        /// </summary>
+        public UnitGitDiff GetFileDiff(UnitGitStatusEntry change, UnitGitWhitespace whitespace)
         {
             var diff = new UnitGitDiff();
             if (change == null || string.IsNullOrWhiteSpace(change.Path))
             {
-                diff.Lines.Add(new UnitGitDiffLine
-                {
-                    Right = "Select a changed file to inspect its diff.",
-                    Kind = UnitGitDiffLineKind.Context
-                });
+                AddDiffMessage(diff, "Select a changed file to inspect its diff.");
                 return diff;
             }
 
@@ -829,9 +1028,11 @@ namespace Orbiters.UnitGit.Editor
             string unstagedOutput = string.Empty;
             string stagedOutput = string.Empty;
 
+            var file = new FileInfo(Path.Combine(ProjectRoot, change.Path));
+            string context = ContextArgument(file.Exists ? file.Length : 0);
             if (change.IsUnstaged && !change.IsUntracked)
             {
-                unstagedResult = RunGit(DefaultTimeoutMilliseconds, "--literal-pathspecs", "diff", "--no-ext-diff", "--unified=80", "--", change.Path);
+                unstagedResult = RunGit(DefaultTimeoutMilliseconds, DiffArguments(whitespace, context, false, change.Path));
                 if (unstagedResult.Success)
                 {
                     unstagedOutput = unstagedResult.StandardOutput;
@@ -840,7 +1041,7 @@ namespace Orbiters.UnitGit.Editor
 
             if (change.IsStaged)
             {
-                stagedResult = RunGit(DefaultTimeoutMilliseconds, "--literal-pathspecs", "diff", "--cached", "--no-ext-diff", "--unified=80", "--", change.Path);
+                stagedResult = RunGit(DefaultTimeoutMilliseconds, DiffArguments(whitespace, context, true, change.Path));
                 if (stagedResult.Success)
                 {
                     stagedOutput = stagedResult.StandardOutput;
@@ -858,6 +1059,7 @@ namespace Orbiters.UnitGit.Editor
                     AppendDiffSection(diff, "Staged changes (HEAD -> index)");
                     ParseUnifiedDiff(stagedOutput, diff);
                     AppendDiffSection(diff, "Unstaged changes (index -> working tree)");
+                    diff.EditableFrom = diff.Lines.Count;
                     ParseUnifiedDiff(unstagedOutput, diff);
                 }
                 else if (hasStagedDiff)
@@ -868,16 +1070,14 @@ namespace Orbiters.UnitGit.Editor
                 }
                 else
                 {
+                    diff.EditableFrom = 0;
                     ParseUnifiedDiff(unstagedOutput, diff);
                 }
 
                 if (diff.Lines.Count == 0)
                 {
-                    diff.Lines.Add(new UnitGitDiffLine
-                    {
-                        Right = "No textual differences to display.",
-                        Kind = UnitGitDiffLineKind.Context
-                    });
+                    diff.EditableFrom = -1;
+                    AddDiffMessage(diff, NoTextualDifferences);
                 }
 
                 return diff;
@@ -892,15 +1092,172 @@ namespace Orbiters.UnitGit.Editor
             GitCommandResult failedResult = stagedResult != null && !stagedResult.Success
                 ? stagedResult
                 : unstagedResult;
-            diff.Lines.Add(new UnitGitDiffLine
-            {
-                Right = failedResult != null && !string.IsNullOrWhiteSpace(failedResult.Message)
-                    ? failedResult.Message
-                    : "No textual differences to display.",
-                Kind = UnitGitDiffLineKind.Context
-            });
+            AddDiffMessage(diff, failedResult != null && !string.IsNullOrWhiteSpace(failedResult.Message)
+                ? failedResult.Message
+                : NoTextualDifferences);
 
             return diff;
+        }
+
+        /// <summary>
+        /// One file of one commit against the commit's first parent: the left side is empty for a root commit or an added
+        /// file, the right side for a deleted file. A renamed file is compared with its previous path.
+        /// </summary>
+        public UnitGitDiff GetCommitFileDiff(string fullHash, string path) => GetCommitFileDiff(fullHash, path, UnitGitWhitespace.None);
+
+        public UnitGitDiff GetCommitFileDiff(string fullHash, string path, UnitGitWhitespace whitespace)
+        {
+            var diff = new UnitGitDiff { Path = path ?? string.Empty, LeftTitle = "Before", RightTitle = ShortHash(fullHash) };
+            if (string.IsNullOrWhiteSpace(fullHash) || fullHash.Trim().StartsWith("-", StringComparison.Ordinal) || string.IsNullOrWhiteSpace(path))
+            {
+                AddDiffMessage(diff, "Select a changed file to inspect its diff.");
+                return diff;
+            }
+
+            string hash = fullHash.Trim();
+            GitCommandResult commit = RunGit(DefaultTimeoutMilliseconds, "show", "-s", "--format=%h%x1f%p%x1f%P", hash);
+            string[] fields = (SplitLines(commit.StandardOutput).FirstOrDefault(line => line.IndexOf(FieldSeparator) >= 0) ?? string.Empty)
+                .Split(FieldSeparator);
+            if (!commit.Success || fields.Length < 3)
+            {
+                AddDiffMessage(diff, commit.Success ? "Could not read commit " + ShortHash(hash) + "." : commit.Message);
+                return diff;
+            }
+
+            string[] parents = ParseParents(fields[2]);
+            string[] shortParents = ParseParents(fields[1]);
+            diff.RightTitle = fields[0];
+            if (parents.Length > 0)
+            {
+                diff.LeftTitle = shortParents.Length > 0 ? shortParents[0] : ShortHash(parents[0]);
+            }
+
+            GitCommandResult size = RunGit(DefaultTimeoutMilliseconds, "--literal-pathspecs", "cat-file", "-s", hash + ":" + path);
+            string context = ContextArgument(size.Success && long.TryParse(size.StandardOutput.Trim(), out long bytes) ? bytes : 0);
+            GitCommandResult result = ReadCommitFileDiff(hash, parents, whitespace, context, path);
+            string previousPath = string.Empty;
+            if (result.Success && parents.Length > 0 && AddsFile(result.StandardOutput) && !(ReadSuperseded?.Invoke() ?? false))
+            {
+                // A path limit hides renames from Git: look up where an added file came from and compare the two paths.
+                previousPath = FindRenameSource(parents[0], hash, path);
+                if (previousPath.Length > 0)
+                {
+                    result = ReadCommitFileDiff(hash, parents, whitespace, context, previousPath, path);
+                }
+            }
+
+            if (!result.Success)
+            {
+                AddDiffMessage(diff, result.Message);
+                return diff;
+            }
+
+            ParseUnifiedDiff(result.StandardOutput, diff);
+            if (diff.Lines.Count == 0)
+            {
+                AddDiffMessage(diff, previousPath.Length > 0 ? "Renamed from " + previousPath + " without changes." : NoTextualDifferences);
+            }
+
+            return diff;
+        }
+
+        private GitCommandResult ReadCommitFileDiff(string hash, string[] parents, UnitGitWhitespace whitespace, string context, params string[] paths)
+        {
+            // git show compares a root commit with nothing; git diff compares any other one with its first parent, merges too.
+            var args = parents.Length == 0
+                ? new List<string> { "--literal-pathspecs", "show", "--no-ext-diff", "-M", context, "--format=" }
+                : new List<string> { "--literal-pathspecs", "diff", "--no-ext-diff", "-M", context };
+            args.AddRange(WhitespaceArguments(whitespace));
+            if (parents.Length == 0)
+            {
+                args.Add(hash);
+            }
+            else
+            {
+                args.Add(parents[0]);
+                args.Add(hash);
+            }
+
+            args.Add("--");
+            args.AddRange(paths);
+            return RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+        }
+
+        // Files up to a few megabytes come whole (the viewer folds what did not change), bigger ones with 80 lines around
+        // each change. (A context of int.MaxValue lines makes Git repeat hunks: a million is plenty.)
+        private const long WholeFileDiffBytes = 3 * 1024 * 1024;
+
+        private static string ContextArgument(long bytes)
+        {
+            return bytes <= WholeFileDiffBytes ? "--unified=1000000" : "--unified=80";
+        }
+
+        private static string[] DiffArguments(UnitGitWhitespace whitespace, string context, bool cached, string path)
+        {
+            var args = new List<string> { "--literal-pathspecs", "diff" };
+            if (cached)
+            {
+                args.Add("--cached");
+            }
+
+            args.Add("--no-ext-diff");
+            args.Add(context);
+            args.AddRange(WhitespaceArguments(whitespace));
+            args.Add("--");
+            args.Add(path);
+            return args.ToArray();
+        }
+
+        internal static IEnumerable<string> WhitespaceArguments(UnitGitWhitespace whitespace)
+        {
+            switch (whitespace)
+            {
+                case UnitGitWhitespace.Trim:
+                    return new[] { "--ignore-space-change" };
+                case UnitGitWhitespace.Ignore:
+                    return new[] { "--ignore-all-space" };
+                case UnitGitWhitespace.IgnoreAndBlankLines:
+                    return new[] { "--ignore-all-space", "--ignore-blank-lines" };
+                default:
+                    return Array.Empty<string>();
+            }
+        }
+
+        private string FindRenameSource(string parent, string hash, string path)
+        {
+            GitCommandResult renames = RunGit(DefaultTimeoutMilliseconds, "-c", "core.quotePath=true", "diff", "--no-ext-diff",
+                "--name-status", "-M", "--diff-filter=R", parent, hash);
+            if (!renames.Success)
+            {
+                return string.Empty;
+            }
+
+            foreach (string line in SplitLines(renames.StandardOutput))
+            {
+                string[] parts = line.Split('\t');
+                if (parts.Length >= 3 && UnquotePath(parts[2]) == path)
+                {
+                    return UnquotePath(parts[1]);
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static bool AddsFile(string unifiedDiff)
+        {
+            return SplitLines(unifiedDiff)
+                .TakeWhile(line => !line.StartsWith("@@", StringComparison.Ordinal))
+                .Any(line => line.StartsWith("new file mode ", StringComparison.Ordinal));
+        }
+
+        private static void AddDiffMessage(UnitGitDiff diff, string message)
+        {
+            diff.Lines.Add(new UnitGitDiffLine
+            {
+                Right = message,
+                Kind = UnitGitDiffLineKind.Context
+            });
         }
 
         public GitCommandResult Checkout(UnitGitBranch branch)
@@ -999,17 +1356,100 @@ namespace Orbiters.UnitGit.Editor
 
         public GitCommandResult RunGit(int timeoutMilliseconds, params string[] arguments)
         {
-            return RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, ProcessLogReceived, null, ReadSuperseded, arguments);
+            var log = ProcessLogReceived;
+            var superseded = ReadSuperseded;
+            return UnitGitWriteGate.Run(arguments, timeoutMilliseconds,
+                () => RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, log, null, superseded, arguments),
+                line => log?.Invoke(line));
         }
 
         internal GitCommandResult RunGitWithEnvironment(IDictionary<string, string> environment, int timeoutMilliseconds, params string[] arguments)
         {
-            return RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, ProcessLogReceived, environment, null, arguments);
+            var log = ProcessLogReceived;
+            return UnitGitWriteGate.Run(arguments, timeoutMilliseconds,
+                () => RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, log, environment, null, arguments),
+                line => log?.Invoke(line));
+        }
+
+        /// <summary>
+        /// Runs "git --literal-pathspecs &lt;arguments&gt; -- &lt;paths&gt;" once per batch of paths and combines the output.
+        /// Stops at the first failing batch and returns it. No paths run nothing: Git would read that as the whole tree.
+        /// </summary>
+        private GitCommandResult RunGitForPaths(int timeoutMilliseconds, IList<string> paths, params string[] arguments)
+        {
+            var output = new StringBuilder();
+            var error = new StringBuilder();
+            foreach (List<string> batch in BatchPaths(paths))
+            {
+                var args = new List<string> { "--literal-pathspecs" };
+                args.AddRange(arguments);
+                args.Add("--");
+                args.AddRange(batch);
+                GitCommandResult result = RunGit(timeoutMilliseconds, args.ToArray());
+                if (!result.Success)
+                {
+                    return result;
+                }
+
+                output.Append(result.StandardOutput);
+                error.Append(result.StandardError);
+            }
+
+            return new GitCommandResult { StandardOutput = output.ToString(), StandardError = error.ToString() };
+        }
+
+        // The paths Git lists for these pathspecs, one per line. Forced quoting keeps them intact whatever the output encoding.
+        private GitCommandResult ListPaths(IList<string> paths, List<string> listed, params string[] arguments)
+        {
+            var args = new List<string> { "-c", "core.quotePath=true" };
+            args.AddRange(arguments);
+            GitCommandResult result = RunGitForPaths(DefaultTimeoutMilliseconds, paths, args.ToArray());
+            if (result.Success)
+            {
+                listed.AddRange(SplitLines(result.StandardOutput).Where(line => line.Length > 0).Select(UnquotePath));
+            }
+
+            return result;
+        }
+
+        private static IEnumerable<List<string>> BatchPaths(IList<string> paths)
+        {
+            var batch = new List<string>();
+            int characters = 0;
+            foreach (string path in paths ?? Array.Empty<string>())
+            {
+                if (batch.Count > 0 && (batch.Count >= MaxPathsPerCommand || characters + path.Length > MaxPathCharactersPerCommand))
+                {
+                    yield return batch;
+                    batch = new List<string>();
+                    characters = 0;
+                }
+
+                batch.Add(path);
+                characters += path.Length + 3; // a space and quotes
+            }
+
+            if (batch.Count > 0)
+            {
+                yield return batch;
+            }
+        }
+
+        private static List<string> SelectedPaths(IList<string> paths)
+        {
+            return paths == null
+                ? new List<string>()
+                : paths.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.Ordinal).ToList();
+        }
+
+        private static string Plural(int count, string noun)
+        {
+            return count.ToString(CultureInfo.InvariantCulture) + " " + noun + (count == 1 ? string.Empty : "s");
         }
 
         public bool IsGitAvailable()
         {
-            var result = RunProcess("git", "Git command timed out.", ProjectRoot, 10000, "--version");
+            var result = RunGit(10000, "--version");
             return result.Success;
         }
 
@@ -1273,7 +1713,7 @@ namespace Orbiters.UnitGit.Editor
             return result.Success;
         }
 
-        internal List<UnitGitCommit> GetCommits(string logSearch, int maxCount = 250)
+        internal List<UnitGitCommit> GetCommits(string logSearch, int maxCount = 250, UnitGitLogFilter filter = null)
         {
             var commits = new List<UnitGitCommit>();
             if (maxCount <= 0) return commits;
@@ -1285,18 +1725,19 @@ namespace Orbiters.UnitGit.Editor
                 var args = new List<string>
                 {
                     "log",
-                    "--all",
-                    "--max-count=" + chunkSize.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    "--skip=" + skipped.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "--max-count=" + chunkSize.ToString(CultureInfo.InvariantCulture),
+                    "--skip=" + skipped.ToString(CultureInfo.InvariantCulture),
                     "--date=relative",
-                    "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%D%x1f%(trailers:key=" + UnitGitReleases.TrailerKey + ",valueonly,separator=%x2C)"
+                    "--pretty=format:" + CommitLogFormat(true)
                 };
+                int formatIndex = args.Count - 1;
+                AddLogFilterArguments(args, filter);
 
                 var result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
                 if (!result.Success && !(ReadSuperseded?.Invoke() ?? false))
                 {
                     // Older Git versions do not support the %(trailers) pretty-format placeholder.
-                    args[args.Count - 1] = "--pretty=format:%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%D";
+                    args[formatIndex] = "--pretty=format:" + CommitLogFormat(false);
                     result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
                 }
 
@@ -1310,6 +1751,49 @@ namespace Orbiters.UnitGit.Editor
                 skipped += chunk.Count;
             }
             return commits;
+        }
+
+        // Without trailer support the release field stays, empty, so every field keeps its position.
+        private static string CommitLogFormat(bool withTrailers)
+        {
+            return "%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%D%x1f" + (withTrailers ? ReleaseTrailerFormat : string.Empty) + "%x1f%P%x1f%at";
+        }
+
+        private static void AddLogFilterArguments(List<string> args, UnitGitLogFilter filter)
+        {
+            if (filter != null && !string.IsNullOrWhiteSpace(filter.Author))
+            {
+                // --fixed-strings and --regexp-ignore-case apply to --author as well: "Ada [VR]" is matched as typed.
+                args.Add("--fixed-strings");
+                args.Add("--regexp-ignore-case");
+                args.Add("--author=" + filter.Author.Trim());
+            }
+
+            if (filter != null && filter.Since.HasValue)
+            {
+                // Unspecified kinds are local, like a date picked in the editor. Git reads the explicit UTC offset.
+                args.Add("--since=" + filter.Since.Value.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'+0000'", CultureInfo.InvariantCulture));
+            }
+
+            string branch = (filter?.Branch ?? string.Empty).Trim();
+            if (branch.StartsWith("-", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Could not read Git history: '" + branch + "' is not a branch.");
+            }
+
+            // One file or folder's history, as JetBrains' "Show History": parents rewritten so the graph joins the commits
+            // shown, and a file followed through its renames.
+            string path = (filter?.Path ?? string.Empty).Trim().Replace('\\', '/');
+            if (path.Length > 0)
+            {
+                args.Add("--parents");
+                if (Path.HasExtension(path)) args.Add("--follow");
+            }
+
+            // "--" keeps a branch named like a file from being read as a path.
+            args.Add(branch.Length > 0 ? branch : "--all");
+            args.Add("--");
+            if (path.Length > 0) args.Add(":(literal)" + path);
         }
 
         internal static UnitGitSnapshot ParseStatusOutput(string output)
@@ -1374,7 +1858,9 @@ namespace Orbiters.UnitGit.Editor
                     AuthorEmail = fields[4],
                     RelativeDate = fields[5],
                     Decorations = fields[6],
-                    ReleaseId = fields.Length >= 8 ? fields[7].Trim() : string.Empty
+                    ReleaseId = fields.Length >= 8 ? fields[7].Trim() : string.Empty,
+                    Parents = fields.Length >= 9 ? ParseParents(fields[8]) : Array.Empty<string>(),
+                    Timestamp = fields.Length >= 10 ? ParseTimestamp(fields[9]) : 0
                 };
 
                 if (MatchesSearch(commit, logSearch))
@@ -1384,6 +1870,18 @@ namespace Orbiters.UnitGit.Editor
             }
 
             return commits;
+        }
+
+        private static string[] ParseParents(string parents)
+        {
+            return string.IsNullOrWhiteSpace(parents)
+                ? Array.Empty<string>()
+                : parents.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        }
+
+        private static long ParseTimestamp(string seconds)
+        {
+            return long.TryParse(seconds.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long value) ? value : 0;
         }
 
         private static bool MatchesSearch(UnitGitCommit commit, string logSearch)
@@ -1714,6 +2212,8 @@ namespace Orbiters.UnitGit.Editor
 
         private static void AppendDiffSection(UnitGitDiff diff, string title)
         {
+            diff.LeftEndsWithoutNewline = false;
+            diff.RightEndsWithoutNewline = false;
             if (diff.Lines.Count > 0)
             {
                 diff.Lines.Add(new UnitGitDiffLine
@@ -1741,7 +2241,14 @@ namespace Orbiters.UnitGit.Editor
         {
             var pendingRemoved = new Queue<string>();
             bool inHunk = false;
-            foreach (string rawLine in SplitLines(output))
+            char previous = ' ';
+            List<string> rawLines = SplitLines(output).ToList();
+            if (rawLines.Count > 0 && rawLines[rawLines.Count - 1].Length == 0)
+            {
+                rawLines.RemoveAt(rawLines.Count - 1); // the output's final newline, not an empty context line
+            }
+
+            foreach (string rawLine in rawLines)
             {
                 if (rawLine.StartsWith("diff --git ", StringComparison.Ordinal))
                 {
@@ -1749,11 +2256,19 @@ namespace Orbiters.UnitGit.Editor
                     inHunk = false;
                     continue;
                 }
-                if (!inHunk && (
-                    rawLine.StartsWith("index ", StringComparison.Ordinal) ||
-                    rawLine.StartsWith("--- ", StringComparison.Ordinal) ||
-                    rawLine.StartsWith("+++ ", StringComparison.Ordinal)))
+                if (!inHunk && IsDiffHeaderLine(rawLine))
                 {
+                    continue;
+                }
+
+                if (!inHunk && rawLine.StartsWith("Binary files ", StringComparison.Ordinal) && rawLine.EndsWith(" differ", StringComparison.Ordinal))
+                {
+                    // Git's "Binary files a/x and /dev/null differ": one explanatory line instead of paths with a/ b/ prefixes.
+                    AddDiffMessage(diff, rawLine.StartsWith("Binary files /dev/null and ", StringComparison.Ordinal)
+                        ? "Binary file added: no text to compare."
+                        : rawLine.EndsWith(" and /dev/null differ", StringComparison.Ordinal)
+                            ? "Binary file deleted: no text to compare."
+                            : "Binary file changed: no text to compare.");
                     continue;
                 }
 
@@ -1770,6 +2285,15 @@ namespace Orbiters.UnitGit.Editor
                     continue;
                 }
 
+                if (inHunk && rawLine.StartsWith("\\", StringComparison.Ordinal))
+                {
+                    // "\ No newline at end of file" is about the line before it; it is not a line of the file.
+                    if (previous != '+') diff.LeftEndsWithoutNewline = true;
+                    if (previous != '-') diff.RightEndsWithoutNewline = true;
+                    continue;
+                }
+
+                previous = rawLine.Length > 0 ? rawLine[0] : ' ';
                 if (rawLine.StartsWith("-", StringComparison.Ordinal))
                 {
                     pendingRemoved.Enqueue(rawLine.Length > 1 ? rawLine.Substring(1) : string.Empty);
@@ -1815,6 +2339,19 @@ namespace Orbiters.UnitGit.Editor
             }
 
             FlushRemoved(diff, pendingRemoved);
+        }
+
+        private static bool IsDiffHeaderLine(string line)
+        {
+            foreach (string prefix in DiffHeaderPrefixes)
+            {
+                if (line.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static void FlushRemoved(UnitGitDiff diff, Queue<string> pendingRemoved)
@@ -1925,10 +2462,19 @@ namespace Orbiters.UnitGit.Editor
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
+                    StandardOutputEncoding = Utf8,
+                    StandardErrorEncoding = Utf8,
                     CreateNoWindow = true
                 };
 
                 startInfo.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
+                // Reads (a refresh's status) must not take the index lock: a commit or a staging starting meanwhile would fail on it.
+                startInfo.EnvironmentVariables["GIT_OPTIONAL_LOCKS"] = "0";
+                if (logHandler != null)
+                {
+                    var raw = logHandler;
+                    logHandler = line => raw(UnitGitRedaction.Redact(line));
+                }
                 if (environment != null)
                 {
                     foreach (KeyValuePair<string, string> item in environment)
@@ -1943,70 +2489,19 @@ namespace Orbiters.UnitGit.Editor
                 logHandler?.Invoke("> " + FormatCommandLine(fileName, arguments));
                 logHandler?.Invoke("cwd: " + startInfo.WorkingDirectory);
 
-                using (var process = new Process())
-                {
-                    process.StartInfo = startInfo;
-                    process.OutputDataReceived += (sender, args) =>
-                    {
-                        if (args.Data != null)
-                        {
-                            output.AppendLine(args.Data);
-                            logHandler?.Invoke("stdout: " + args.Data);
-                        }
-                    };
-                    process.ErrorDataReceived += (sender, args) =>
-                    {
-                        if (args.Data != null)
-                        {
-                            error.AppendLine(args.Data);
-                            logHandler?.Invoke("stderr: " + args.Data);
-                        }
-                    };
-
-                    process.Start();
-                    process.BeginOutputReadLine();
-                    process.BeginErrorReadLine();
-
-                    var elapsed = Stopwatch.StartNew();
-                    bool exited;
-                    bool cancelled = false;
-                    if (superseded == null)
-                        exited = process.WaitForExit(timeoutMilliseconds);
-                    else
-                    {
-                        while (!(exited = process.WaitForExit(50)))
-                        {
-                            cancelled = superseded();
-                            if (cancelled || elapsed.ElapsedMilliseconds >= timeoutMilliseconds)
-                                break;
-                        }
-                    }
-                    if (!exited)
-                    {
-                        result.TimedOut = !cancelled;
-                        result.ExitCode = 1;
-                        if (cancelled)
-                            error.AppendLine("Read superseded.");
-                        else
-                            logHandler?.Invoke("timed out after " + (timeoutMilliseconds / 1000f).ToString("0.#") + " seconds");
-                        try
-                        {
-                            process.Kill();
-                            process.WaitForExit(1000);
-                        }
-                        catch
-                        {
-                        }
-                        if (cancelled)
-                            return Failure("Read superseded.");
-                    }
-                    else
-                    {
-                        process.WaitForExit();
-                        result.ExitCode = process.ExitCode;
-                        logHandler?.Invoke("exit: " + result.ExitCode);
-                    }
-                }
+                var processResult = EditorProcessRunner.Run(startInfo, timeoutMilliseconds, superseded,
+                    logHandler == null ? null : (Action<string>)(line => logHandler("stdout: " + line)),
+                    logHandler == null ? null : (Action<string>)(line => logHandler("stderr: " + line)));
+                result.ExitCode = processResult.Success ? 0 : processResult.ExitCode == 0 ? 1 : processResult.ExitCode;
+                result.TimedOut = processResult.TimedOut;
+                output.Append(processResult.StandardOutput);
+                error.Append(processResult.StandardError);
+                if (processResult.Cancelled)
+                    error.AppendLine(superseded?.Invoke() == true ? "Read superseded." : "Command interrupted by editor reload or shutdown.");
+                if (processResult.TimedOut)
+                    logHandler?.Invoke("command or output capture timed out");
+                else if (!processResult.Cancelled)
+                    logHandler?.Invoke("exit: " + result.ExitCode);
             }
             catch (Exception ex)
             {

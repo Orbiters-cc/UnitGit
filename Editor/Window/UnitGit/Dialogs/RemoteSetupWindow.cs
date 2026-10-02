@@ -31,72 +31,66 @@ namespace Orbiters.UnitGit.Editor
                 window.remoteName = "origin";
                 window.onLogin = onLogin;
                 window.onCreateRemote = onCreateRemote;
-                window.minSize = new Vector2(420f, 260f);
-                window.maxSize = new Vector2(620f, 320f);
+                window.minSize = new Vector2(460f, 290f);
+                window.maxSize = new Vector2(640f, 340f);
                 window.ShowUtility();
             }
 
             public void CreateGUI()
             {
-                var styleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(StyleSheetPath);
-                if (styleSheet != null)
+                var body = UnitGitDialog.Setup(this, "Connect a remote",
+                    "Signs in with the GitHub or GitLab command line tool, creates the repository and adds it as a remote. Nothing is pushed until you push.");
+
+                var providers = new VisualElement();
+                providers.AddToClassList("ug-segmented");
+                var buttons = new System.Collections.Generic.List<Button>();
+                foreach (var option in new[] { UnitGitRemoteProvider.GitHub, UnitGitRemoteProvider.GitLab })
                 {
-                    rootVisualElement.styleSheets.Add(styleSheet);
+                    var value = option;
+                    var button = new Button { text = value.ToString() };
+                    button.AddToClassList("ug-segmented__option");
+                    UnitGitUi.Press(button, () =>
+                    {
+                        provider = value;
+                        foreach (var other in buttons) other.EnableInClassList("ug-segmented__option--on", other == button);
+                    });
+                    button.EnableInClassList("ug-segmented__option--on", provider == value);
+                    buttons.Add(button);
+                    providers.Add(button);
                 }
+                body.Add(Field("Service", providers));
 
-                rootVisualElement.AddToClassList("unitgit-github-setup");
-
-                var title = new Label("Remote CLI setup");
-                title.AddToClassList("unitgit-github-setup-title");
-                rootVisualElement.Add(title);
-
-                var body = new Label("Use GitHub CLI or GitLab CLI to sign in, create a remote repository, and set the local remote. This does not push commits.");
-                body.AddToClassList("unitgit-github-setup-body");
-                rootVisualElement.Add(body);
-
-                var providerField = new EnumField("Provider", provider);
-                providerField.AddToClassList("unitgit-github-setup-field");
-                providerField.RegisterValueChangedCallback(evt => provider = (UnitGitRemoteProvider)evt.newValue);
-                rootVisualElement.Add(providerField);
-
-                var repositoryField = new TextField("Repository");
-                repositoryField.value = repositoryName;
-                repositoryField.AddToClassList("unitgit-github-setup-field");
+                var repositoryField = new TextField { value = repositoryName };
+                repositoryField.AddToClassList("ug-dialog__field");
                 repositoryField.RegisterValueChangedCallback(evt => repositoryName = evt.newValue);
-                rootVisualElement.Add(repositoryField);
+                body.Add(Field("Repository", repositoryField));
 
-                var remoteField = new TextField("Remote");
-                remoteField.value = remoteName;
-                remoteField.AddToClassList("unitgit-github-setup-field");
+                var remoteField = new TextField { value = remoteName };
+                remoteField.AddToClassList("ug-dialog__field");
                 remoteField.RegisterValueChangedCallback(evt => remoteName = evt.newValue);
-                rootVisualElement.Add(remoteField);
+                body.Add(Field("Remote name", remoteField));
 
-                var privateToggle = new Toggle("Private repository");
-                privateToggle.value = isPrivate;
-                privateToggle.AddToClassList("unitgit-github-setup-toggle");
-                privateToggle.RegisterValueChangedCallback(evt => isPrivate = evt.newValue);
-                rootVisualElement.Add(privateToggle);
+                body.Add(Field("Private repository", new Orbiters.Toolkit.Editor.ToggleSwitch(isPrivate, value => isPrivate = value)));
 
-                var actions = new VisualElement();
-                actions.AddToClassList("unitgit-row-actions");
-                actions.Add(BuildSetupButton("Login with Selected CLI", () => onLogin?.Invoke(provider)));
-                actions.Add(BuildSetupButton("Create Remote", () =>
+                var actions = UnitGitDialog.Actions(this);
+                actions.Insert(0, UnitGitUi.Pill("Sign in", () => onLogin?.Invoke(provider), "ghost", UnitGitIconKind.User,
+                    "Opens the GitHub or GitLab command line sign-in"));
+                actions.Add(UnitGitUi.Pill("Cancel", Close, "ghost"));
+                actions.Add(UnitGitUi.Pill("Create remote", () =>
                 {
                     onCreateRemote?.Invoke(provider, repositoryName, remoteName, isPrivate);
                     Close();
-                }));
-                actions.Add(BuildSetupButton("Cancel", Close));
-                rootVisualElement.Add(actions);
+                }, "primary", UnitGitIconKind.Remote));
             }
 
-            private static Button BuildSetupButton(string text, Action onClick)
+            private static VisualElement Field(string label, VisualElement control)
             {
-                var button = new Button(() => onClick?.Invoke())
-                {
-                    text = text
-                };
-                button.AddToClassList("unitgit-button");
-                return button;
+                var row = new VisualElement();
+                row.AddToClassList("ug-dialog__row");
+                row.Add(UnitGitUi.Text(label, "ug-dialog__label"));
+                if (control is TextField) control.style.flexGrow = 1;
+                row.Add(control);
+                return row;
             }
         }
     }

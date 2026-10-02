@@ -18,9 +18,13 @@ namespace Orbiters.UnitGit.Editor.Tests
             var type = typeof(UnitGitWindow);
             try
             {
-                var initial = new UnitGitDiff { LeftTitle = "Repository", RightTitle = "Current version" };
+                var initial = new UnitGitDiff { Path = "notes.txt", LeftTitle = "Repository", RightTitle = "Current version" };
+                var snapshot = new UnitGitSnapshot { HasCommits = true, HasRepository = true, GitAvailable = true, IsUnityProject = true };
+                snapshot.Changes.Add(new UnitGitStatusEntry { Path = "notes.txt", WorkTreeStatus = 'M' });
+                type.GetField("snapshot", flags).SetValue(window, snapshot);
+                type.GetField("selectedChangePath", flags).SetValue(window, "notes.txt");
                 type.GetField("loadedDiff", flags).SetValue(window, initial);
-                type.GetField("requestedDiffPath", flags).SetValue(window, "");
+                type.GetField("requestedDiffPath", flags).SetValue(window, "notes.txt");
                 var pane = (VisualElement)type.GetMethod("BuildDiffViewerPane", flags).Invoke(window, null);
                 var headers = pane.Query<Label>(className: "unitgit-diff-header-cell").ToList();
                 Assert.That(headers.Select(label => label.text), Is.EqualTo(new[] { "Repository", "Current version" }));

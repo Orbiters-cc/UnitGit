@@ -69,7 +69,6 @@ namespace Orbiters.UnitGit.Editor
 
         private void QueueLogSearchRefresh()
         {
-            logPage = 0;
             historyLimit = CommitPageSize * 3;
             queuedLogSearchRefreshTime = EditorApplication.timeSinceStartup + LogSearchRefreshDelaySeconds;
             if (logSearchRefreshQueued)
@@ -144,12 +143,14 @@ namespace Orbiters.UnitGit.Editor
             string search = logSearch;
             int requestedHistoryLimit = historyLimit;
             UnitGitSnapshot previousSnapshot = snapshot;
+            var filter = new UnitGitLogFilter { Branch = logFilter.Branch, Author = logFilter.Author, Since = logFilter.Since, Path = logFilter.Path };
             try
             {
                 EnsureEditorUpdatePump();
                 Task.Run(() => BuildSnapshotRefreshResult(
                         projectRoot,
                         search,
+                        filter,
                         previousSnapshot,
                         line =>
                         {
@@ -171,6 +172,7 @@ namespace Orbiters.UnitGit.Editor
         private static SnapshotRefreshResult BuildSnapshotRefreshResult(
             string projectRoot,
             string search,
+            UnitGitLogFilter filter,
             UnitGitSnapshot previousSnapshot,
             UnitGitProcessLogHandler logHandler, int historyLimit = 300, Func<bool> superseded = null)
         {
@@ -178,7 +180,7 @@ namespace Orbiters.UnitGit.Editor
             service.ProcessLogReceived = logHandler;
             bool wasSuperseded = false;
             service.ReadSuperseded = () => wasSuperseded = wasSuperseded || (superseded?.Invoke() ?? false);
-            UnitGitSnapshot nextSnapshot = service.BuildSnapshot(search, historyLimit);
+            UnitGitSnapshot nextSnapshot = service.BuildSnapshot(search, historyLimit, filter);
             var result = new SnapshotRefreshResult
             {
                 Snapshot = nextSnapshot,
@@ -206,11 +208,20 @@ namespace Orbiters.UnitGit.Editor
             }
 
             refreshingSnapshot = false;
+            loadingMoreHistory = false;
             if (task.Status == TaskStatus.RanToCompletion && task.Result.Superseded)
             {
                 // Keep the current view while the search debounce or the replacement refresh runs.
                 refreshAgainRequested = false;
                 if (logSearch == logSearchDraft) RefreshSnapshot();
+                return;
+            }
+            if (task.Status != TaskStatus.RanToCompletion && !string.IsNullOrEmpty(logFilter.Branch))
+            {
+                // The branch the log was filtered to is gone (deleted, renamed): back to every branch.
+                logFilter.Branch = string.Empty;
+                ShowToast("That branch no longer exists: showing every branch.");
+                RefreshSnapshot();
                 return;
             }
             if (task.Status != TaskStatus.RanToCompletion)
@@ -222,6 +233,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 snapshot = task.Result.Snapshot;
                 ReconcileSnapshotSelection();
+                ReconcilePendingInclude();
             }
 
             bool preserveLocalView = activeTab == UnitGitTab.LocalChanges && localChangesListRoot != null &&
@@ -229,16 +241,13 @@ namespace Orbiters.UnitGit.Editor
                 string.IsNullOrWhiteSpace(snapshot.LastError);
             if (preserveLocalView)
             {
+                UpdateChangesNotices();
                 if (!task.Result.ChangesUnchanged)
+                    RefreshChangesList();
+                else
                 {
-                    localChangesListRoot.Clear();
-                    if (snapshot.Changes.Count == 0)
-                        localChangesListRoot.Add(BuildEmptyState("Working tree is clean."));
-                    else if (GetFoldoutExpanded(ChangesFoldPref, true))
-                        AddChangedFileGroups(localChangesListRoot);
-                    var count = contentRoot.Q<Label>(className: "unitgit-foldout-detail");
-                    if (count != null)
-                        count.text = snapshot.Changes.Count + " files";
+                    changesListView?.RefreshItems();
+                    UpdateCommitSummary();
                 }
                 var change = GetSelectedChange();
                 bool changedPath = requestedDiffPath != (change != null ? change.Path : string.Empty);
@@ -247,10 +256,16 @@ namespace Orbiters.UnitGit.Editor
                     RebuildLocalDiffPane();
                 RefreshTopBar();
             }
+            else if (activeTab == UnitGitTab.Log && logList != null && logList.panel != null && task.Status == TaskStatus.RanToCompletion &&
+                     snapshot.HasRepository && snapshot.HasCommits && string.IsNullOrWhiteSpace(snapshot.LastError) && snapshot.Commits.Count > 0)
+            {
+                UpdateTopBar();
+                RefreshLogInPlace();
+            }
             else
             {
                 requestedDiffPath = null;
-                BuildShell();
+                UpdateTopBar();
                 RebuildContent();
             }
             RestoreScrollOffsets();
@@ -269,6 +284,8 @@ namespace Orbiters.UnitGit.Editor
                 ?? snapshot.Branches.FirstOrDefault(branch => branch.IsCurrent)
                 ?? snapshot.Branches.FirstOrDefault();
 
+            var present = new HashSet<string>(snapshot.Changes.Select(change => change.Path), StringComparer.OrdinalIgnoreCase);
+            selectedChangePaths.RemoveWhere(path => !present.Contains(path));
             if (snapshot.Changes.Count > 0 &&
                 (string.IsNullOrWhiteSpace(selectedChangePath) ||
                  snapshot.Changes.All(change => !string.Equals(change.Path, selectedChangePath, StringComparison.OrdinalIgnoreCase))))
@@ -279,6 +296,8 @@ namespace Orbiters.UnitGit.Editor
             {
                 selectedChangePath = string.Empty;
             }
+            if (selectedChangePaths.Count == 0 && !string.IsNullOrEmpty(selectedChangePath))
+                selectedChangePaths.Add(selectedChangePath);
 
             if (snapshot.HasRepository && snapshot.Commits.Count > 0)
             {

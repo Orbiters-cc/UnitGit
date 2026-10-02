@@ -93,7 +93,7 @@ namespace Orbiters.UnitGit.Editor
 
         private void Fetch()
         {
-            RunAction("fetch", () => gitService.Fetch());
+            RunAction("fetch", () => gitService.Fetch(), working: "Fetching…", success: "Fetched every remote");
         }
 
         private void OpenRemoteSetup()
@@ -104,72 +104,75 @@ namespace Orbiters.UnitGit.Editor
                 CreateRemoteRepository);
         }
 
+        // Fast-forward only: Git refuses anything that would merge, so nothing is at risk and nothing is asked.
         private void PullFastForward()
         {
-            if (!ConfirmGitOperation(
-                    "Pull",
-                    "Pull",
-                    GitCommand("pull", "--ff-only"),
-                    "Fast-forward the current branch from its upstream.",
-                    "This updates the branch and working tree. Git will refuse non-fast-forward merges.",
-                    GetLocalChangeCount()))
+            string branch = snapshot?.CurrentBranch;
+            RunAction("pull", () => gitService.PullFastForward(), working: "Pulling…",
+                success: string.IsNullOrWhiteSpace(branch) ? "Up to date" : "‘" + branch + "’ is up to date");
+        }
+
+        private void PushCurrentBranch()
+        {
+            if (snapshot == null) return;
+            if (snapshot.Remotes.Count == 0)
             {
+                OpenRemoteSetup();
                 return;
             }
-
-            RunAction("pull", () => gitService.PullFastForward());
+            string branch = snapshot.CurrentBranch;
+            RunAction("push", () => gitService.Push(), working: "Pushing…",
+                success: snapshot.Ahead > 0 ? "Pushed " + snapshot.Ahead + " commit" + (snapshot.Ahead == 1 ? string.Empty : "s") + " to " + (string.IsNullOrWhiteSpace(branch) ? "the remote" : "‘" + branch + "’")
+                    : "Pushed ‘" + branch + "’");
         }
 
         private void StageAll()
         {
-            if (!ConfirmGitOperation(
-                    "Stage All Changes",
-                    "Stage",
-                    GitCommand("add", "-A"),
-                    "Stage all tracked, untracked, modified, and deleted files.",
-                    string.Empty,
-                    GetLocalChangeCount()))
-            {
-                return;
-            }
-
-            RunAction("stage all", () => gitService.StageAll());
+            RunAction("stage all", () => gitService.StageAll(), working: "Including every change…");
         }
 
         private void UnstageAll()
         {
-            if (!ConfirmGitOperation(
-                    "Unstage All Changes",
-                    "Unstage",
-                    GitCommand("reset"),
-                    "Move all staged changes back to the working tree.",
-                    string.Empty,
-                    GetStagedChangeCount()))
-            {
-                return;
-            }
-
-            RunAction("unstage all", () => gitService.UnstageAll());
+            RunAction("unstage all", () => gitService.UnstageAll(), working: "Excluding every change…");
         }
 
-        private void CommitStaged()
+        // No confirmation: nothing is lost, and Undo-like fixes (amend, reset) stay one click away. Ctrl+Enter commits.
+        private void CommitStaged(bool push = false)
         {
             string message = string.IsNullOrWhiteSpace(commitMessage) ? string.Empty : commitMessage.Trim();
             bool amend = commitAmend;
-            if (!ConfirmGitOperation(
-                    amend ? "Amend Commit" : "Commit Staged Changes",
-                    amend ? "Amend" : "Commit",
-                    amend ? GitCommand("commit", "--amend", "-m", message) : GitCommand("commit", "-m", message),
-                    amend ? "Amend the previous commit with the staged changes." : "Create a commit from the staged changes.",
-                    amend ? HistoryRewriteWarning : string.Empty,
-                    GetStagedChangeCount()))
+            int included = IncludedCount();
+            if (message.Length == 0)
             {
+                ShowToast("Write a commit message first.", error: true);
+                contentRoot?.Q<TextField>(className: "unitgit-local-commit-message")?.Focus();
+                return;
+            }
+            if (!amend && included == 0)
+            {
+                ShowToast("Tick the files to commit first.", error: true);
+                return;
+            }
+            if (busy) return;
+            if (includeRunning || includeQueue.Count > 0)
+            {
+                // The boxes were just ticked: the commit follows as soon as Git has the files.
+                commitWhenIncluded = push;
+                UpdateCommitSummary();
+                RefreshTopBar();
                 return;
             }
 
+            string subject = message.Split('\n')[0].Trim();
+            string done = (amend ? "Amended \u2018" : "Committed \u2018") + (subject.Length > 60 ? subject.Substring(0, 57) + "\u2026" : subject) + "\u2019" +
+                          (push ? " and pushed" : string.Empty);
             RunAction(
                 amend ? "amend commit" : "commit",
-                () => amend ? gitService.CommitAmend(message) : gitService.Commit(message),
+                () =>
+                {
+                    var result = amend ? gitService.CommitAmend(message) : gitService.Commit(message);
+                    return result.Success && push ? gitService.Push() : result;
+                },
                 result =>
                 {
                     if (result != null && result.Success)
@@ -179,12 +182,14 @@ namespace Orbiters.UnitGit.Editor
                         commitMessageBeforeAmend = string.Empty;
                         commitAmend = false;
                         contentRoot?.Q<TextField>(className: "unitgit-local-commit-message")?.SetValueWithoutNotify(commitMessage);
-                        contentRoot?.Q<Toggle>(className: "unitgit-local-amend-toggle")?.SetValueWithoutNotify(false);
-                        var submit = contentRoot?.Q<Button>("unitgit-commit-submit");
-                        if (submit != null)
-                            submit.text = "Commit Staged";
+                        var placeholder = contentRoot?.Q<Label>(className: "unitgit-local-commit-placeholder");
+                        if (placeholder != null) placeholder.style.display = DisplayStyle.Flex;
+                        if (amendCheck != null) amendCheck.State = UnitGitCheckState.Off;
+                        UpdateCommitSummary();
                     }
-                });
+                },
+                push ? "Committing and pushing\u2026" : amend ? "Amending\u2026" : "Committing\u2026",
+                done);
         }
 
     }

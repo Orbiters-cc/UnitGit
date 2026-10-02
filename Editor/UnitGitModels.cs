@@ -62,6 +62,7 @@ namespace Orbiters.UnitGit.Editor
         public bool HasMoreCommits;
         public UnitGitReleaseFile Releases = new UnitGitReleaseFile();
         public List<string> Shelves = new List<string>();
+        public List<string> Remotes = new List<string>();
         public string HeadMessage = string.Empty;
         // Files Git still tracks although the ignore rules now leave them out (MCB version downloads).
         public List<string> TrackedIgnoredDownloads = new List<string>();
@@ -154,6 +155,8 @@ namespace Orbiters.UnitGit.Editor
         public string RelativeDate = string.Empty;
         public string Decorations = string.Empty;
         public string ReleaseId = string.Empty;
+        public string[] Parents = Array.Empty<string>(); // full hashes, first parent first
+        public long Timestamp; // author date, unix seconds
 
         public bool HasRelease
         {
@@ -168,7 +171,24 @@ namespace Orbiters.UnitGit.Editor
         public string CommitterName = string.Empty;
         public string CommitterEmail = string.Empty;
         public string CommitterDate = string.Empty;
-        public List<string> ChangedFiles = new List<string>();
+        public string Body = string.Empty; // the message without its subject line
+        public List<string> ChangedFiles = new List<string>(); // renamed and copied files by their new path
+        // Status letter of each changed path: A, M, D, R, C or T (for merges, the change against the first parent).
+        public Dictionary<string, char> FileStatus = new Dictionary<string, char>(StringComparer.Ordinal);
+    }
+
+    /// <summary>Narrows the history: one branch instead of all refs, commits by one author, commits since a date.</summary>
+    internal sealed class UnitGitLogFilter
+    {
+        public string Branch = string.Empty; // a ref Git can read ("main", "origin/main", "refs/heads/main")
+        public string Author = string.Empty; // part of the author's name or email, any letter case
+        public DateTime? Since; // committed on or after; unspecified kinds are local times
+        public string Path = string.Empty; // a file or folder ("Show History"): only commits that changed it
+
+        public bool IsEmpty
+        {
+            get { return string.IsNullOrWhiteSpace(Branch) && string.IsNullOrWhiteSpace(Author) && !Since.HasValue && string.IsNullOrWhiteSpace(Path); }
+        }
     }
 
     internal sealed class UnitGitDiff
@@ -179,6 +199,11 @@ namespace Orbiters.UnitGit.Editor
         public List<UnitGitDiffLine> Lines = new List<UnitGitDiffLine>();
         public int DifferenceCount;
         public int MaxLineLength;
+        // From this line on, the right side is the file on disk (index -> working tree): its changes can be put back. -1: none.
+        public int EditableFrom = -1;
+        // "\ No newline at end of file" after the left / right side's last line (of the last section).
+        public bool LeftEndsWithoutNewline;
+        public bool RightEndsWithoutNewline;
     }
 
     internal sealed class UnitGitDiffLine
@@ -186,6 +211,18 @@ namespace Orbiters.UnitGit.Editor
         public string Left = string.Empty;
         public string Right = string.Empty;
         public UnitGitDiffLineKind Kind;
+        // The exact text when what is shown differs (tabs shown as spaces); null when Left / Right are exact.
+        public string RawLeft;
+        public string RawRight;
+    }
+
+    /// <summary>What a diff ignores, as JetBrains IDEs offer it.</summary>
+    internal enum UnitGitWhitespace
+    {
+        None,
+        Trim,
+        Ignore,
+        IgnoreAndBlankLines
     }
 
     internal enum UnitGitDiffLineKind

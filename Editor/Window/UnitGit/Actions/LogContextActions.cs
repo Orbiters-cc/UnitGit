@@ -23,21 +23,41 @@ namespace Orbiters.UnitGit.Editor
             }
 
             List<UnitGitCommit> selectedCommits = GetSelectedCommitsInLogOrder();
-            menu.AddItem(new GUIContent("Rename Commit"), false, () => PromptRenameCommit(commit));
-            menu.AddItem(new GUIContent("Reset Current Branch to Here..."), false, () => PromptResetCurrentBranch(commit));
+            menu.AddItem(new GUIContent("New Branch from Here…"), false, () => PromptCreateBranchFrom(commit.FullHash));
+            menu.AddItem(new GUIContent("Cherry-Pick"), false, () => CherryPickCommit(commit));
+            menu.AddItem(new GUIContent("Revert Commit"), false, () => RevertCommit(commit));
+            menu.AddSeparator(string.Empty);
+            menu.AddItem(new GUIContent("Rename Commit…"), false, () => PromptRenameCommit(commit));
+            menu.AddItem(new GUIContent("Reset Current Branch to Here…"), false, () => PromptResetCurrentBranch(commit));
             if (selectedCommits.Count >= 2)
             {
-                menu.AddItem(new GUIContent("Squash Selected Commits"), false, PromptSquashSelectedCommits);
+                menu.AddItem(new GUIContent("Squash Selected Commits…"), false, PromptSquashSelectedCommits);
             }
             else
             {
-                menu.AddDisabledItem(new GUIContent("Squash Selected Commits"));
+                menu.AddDisabledItem(new GUIContent("Squash Selected Commits…"));
             }
 
             menu.AddSeparator(string.Empty);
-            menu.AddItem(new GUIContent("Copy Hash"), false, () => CopyText("copy hash", commit.FullHash));
+            menu.AddItem(new GUIContent("Copy Hash"), false, () => { CopyText("copy hash", commit.FullHash); ShowToast("Copied " + commit.ShortHash); });
             menu.AddItem(new GUIContent("Copy Short Hash"), false, () => CopyText("copy short hash", commit.ShortHash));
+            menu.AddItem(new GUIContent("Copy Subject"), false, () => CopyText("copy subject", commit.Subject));
             menu.ShowAsContext();
+        }
+
+        // Cherry-pick and revert make a new commit on the current branch; a conflict opens the Conflicts tab.
+        private void CherryPickCommit(UnitGitCommit commit)
+        {
+            RunAction("cherry-pick " + commit.ShortHash, () => gitService.CherryPick(commit.FullHash),
+                result => { if (result != null && !result.Success && HasConflictWork()) SetActiveTab(UnitGitTab.Conflicts); },
+                "Cherry-picking " + commit.ShortHash + "…", "Cherry-picked ‘" + Shorten(commit.Subject, 50) + "’");
+        }
+
+        private void RevertCommit(UnitGitCommit commit)
+        {
+            RunAction("revert " + commit.ShortHash, () => gitService.RevertCommit(commit.FullHash),
+                result => { if (result != null && !result.Success && HasConflictWork()) SetActiveTab(UnitGitTab.Conflicts); },
+                "Reverting " + commit.ShortHash + "…", "Reverted ‘" + Shorten(commit.Subject, 50) + "’");
         }
 
         private void ShowReleaseContextMenu(UnitGitCommit commit, UnitGitReleaseEntry release)

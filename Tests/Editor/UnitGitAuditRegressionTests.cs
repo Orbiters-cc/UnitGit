@@ -179,10 +179,11 @@ namespace Orbiters.UnitGit.Editor.Tests
             {
                 typeof(UnitGitWindow).GetField("snapshot", Private).SetValue(window, initial);
                 typeof(UnitGitWindow).GetField("gitService", Private).SetValue(window, null);
-                typeof(UnitGitWindow).GetField("logPage", Private).SetValue(window, 2);
-                typeof(UnitGitWindow).GetMethod("NextLogPage", Private).Invoke(window, null);
+                // Scrolling to the end of the log loads the next 300 commits, once until they arrive.
+                typeof(UnitGitWindow).GetMethod("LoadMoreHistory", Private).Invoke(window, null);
                 Assert.That(typeof(UnitGitWindow).GetField("historyLimit", Private).GetValue(window), Is.EqualTo(600));
-                Assert.That(typeof(UnitGitWindow).GetField("logPage", Private).GetValue(window), Is.EqualTo(3));
+                typeof(UnitGitWindow).GetMethod("LoadMoreHistory", Private).Invoke(window, null);
+                Assert.That(typeof(UnitGitWindow).GetField("historyLimit", Private).GetValue(window), Is.EqualTo(600));
             }
             finally { UnityEngine.Object.DestroyImmediate(window); }
         }

@@ -125,6 +125,8 @@ namespace Orbiters.UnitGit.Editor
             bool model = ModelVersions.IsModelPath(originalPath);
             string scratch = Path.Combine(Path.GetFullPath(Path.Combine(Application.dataPath, "..")), "Library", "UnitGitCompare", Guid.NewGuid().ToString("N").Substring(0, 12));
             string extension = Path.GetExtension(originalPath);
+            // Everything that does not need Unity runs in the background: Git writing the versions, reading the models
+            // and comparing them. The editor only imports prefabs and makes the meshes, one per frame.
             var reads = Task.Run(() =>
             {
                 Directory.CreateDirectory(scratch);
@@ -139,81 +141,192 @@ namespace Orbiters.UnitGit.Editor
                     File.Delete(file);
                     return new Read { Bytes = bytes, Meshes = MeshComparison.Parse(originalPath, bytes) };
                 }
-                return new[] { Take(left, "mine"), Take(right, "theirs"), Take(reference, "base") };
-            });
-            bool handled = false;
-            schedule.Execute(() =>
-            {
-                if (handled || !reads.IsCompleted) return;
-                handled = true;
-                if (loading == cacheKey) loading = null;
-                if (reads.IsFaulted)
+                var result = new[] { Take(left, "mine"), Take(right, "theirs"), Take(reference, "base") };
+                if (!model) return (result, (Loaded)null);
+                var loaded = new Loaded { Key = cacheKey };
+                ModelInfo Info(Read read)
                 {
-                    Message("Could not read the versions", reads.Exception?.GetBaseException().Message);
-                    DeleteFolder(scratch);
+                    if (read == null) return null;
+                    var info = MeshComparison.FromFile(read.Bytes.LongLength, read.Meshes);
+                    loaded.Infos.Add(info);
+                    return info;
+                }
+                Compare(loaded, Info(result[0]), Info(result[1]), Info(result[2]));
+                return (result, loaded);
+            });
+            WhenDone(reads, cacheKey, outcome =>
+            {
+                if (outcome.IsFaulted)
+                {
+                    Done(cacheKey, scratch);
+                    if (Showing(cacheKey)) Message("Could not read the versions", outcome.Exception?.GetBaseException().Message);
                     return;
                 }
-                if (!model) Working("Loading the prefab versions…");
-                // One frame later, so the message shows before any import.
-                schedule.Execute(() =>
+                if (model)
                 {
-                    var loaded = Build(cacheKey, originalPath, reads.Result);
-                    DeleteFolder(scratch);
-                    current?.Release();
-                    current = loaded;
-                    if (key == cacheKey) Show(loaded);
-                }).StartingIn(30);
-            }).Every(40).Until(() => handled);
+                    Finish(cacheKey, scratch, outcome.Result.Item2);
+                    return;
+                }
+                if (Showing(cacheKey)) Working("Loading the prefab versions…");
+                // A few frames later, so the message shows before the import.
+                var start = DateTime.UtcNow;
+                Pump(() =>
+                {
+                    if ((DateTime.UtcNow - start).TotalMilliseconds < 50) return false;
+                    LoadPrefabs(cacheKey, scratch, originalPath, outcome.Result.Item1);
+                    return true;
+                });
+            });
         }
 
-        private static Loaded Build(string cacheKey, string originalPath, Read[] reads)
+        // Prefabs need Unity's importer: imported and described here, then compared in the background.
+        private void LoadPrefabs(string cacheKey, string scratch, string originalPath, Read[] reads)
         {
             var loaded = new Loaded { Key = cacheKey };
+            ModelInfo left, right, baseInfo;
             try
             {
                 ModelInfo Take(Read read, string label)
                 {
                     if (read == null) return null;
-                    ModelInfo info;
-                    if (read.Meshes != null) info = MeshComparison.FromFile(originalPath, read.Bytes, read.Meshes);
-                    else
-                    {
-                        string asset = ModelVersions.Import(read.File, originalPath, label);
-                        loaded.Assets.Add(asset);
-                        info = MeshComparison.Describe(AssetDatabase.LoadAssetAtPath<GameObject>(asset), new FileInfo(read.File).Length);
-                    }
+                    string asset = ModelVersions.Import(read.File, originalPath, label);
+                    loaded.Assets.Add(asset);
+                    var info = MeshComparison.Describe(AssetDatabase.LoadAssetAtPath<GameObject>(asset), new FileInfo(read.File).Length);
+                    MeshComparison.Snapshot(info);
                     loaded.Infos.Add(info);
                     return info;
                 }
-                loaded.Left.Info = Take(reads[0], "mine");
-                loaded.Right.Info = Take(reads[1], "theirs");
-                var baseInfo = Take(reads[2], "base");
-                loaded.AgainstBase = baseInfo != null;
-                var empty = new ModelInfo();
-                if (loaded.Left.Info != null) loaded.Left.Diff = MeshComparison.Compare(baseInfo ?? loaded.Right.Info ?? empty, loaded.Left.Info);
-                if (loaded.Right.Info != null) loaded.Right.Diff = MeshComparison.Compare(baseInfo ?? loaded.Left.Info ?? empty, loaded.Right.Info);
-                Colour(loaded.Left);
-                Colour(loaded.Right);
+                left = Take(reads[0], "mine");
+                right = Take(reads[1], "theirs");
+                baseInfo = Take(reads[2], "base");
             }
             catch (Exception ex)
             {
                 loaded.Error = ex.Message;
+                Finish(cacheKey, scratch, loaded);
+                return;
             }
-            return loaded;
+            if (Showing(cacheKey)) Working("Comparing the versions…");
+            WhenDone(Task.Run(() => Compare(loaded, left, right, baseInfo)), cacheKey, outcome =>
+            {
+                if (outcome.IsFaulted) loaded.Error = outcome.Exception?.GetBaseException().Message;
+                Finish(cacheKey, scratch, loaded);
+            });
         }
 
-        // A copy of each mesh with the change colours in its vertex colours (the version's own mesh is never touched).
-        private static void Colour(Side side)
+        // Any thread: what each side changed, with the colours of its highlight.
+        private static void Compare(Loaded loaded, ModelInfo left, ModelInfo right, ModelInfo baseInfo)
         {
-            if (side.Info == null || side.Diff == null) return;
+            loaded.Left.Info = left;
+            loaded.Right.Info = right;
+            loaded.AgainstBase = baseInfo != null;
+            var empty = new ModelInfo();
+            if (left != null) loaded.Left.Diff = MeshComparison.Compare(baseInfo ?? right ?? empty, left);
+            if (right != null) loaded.Right.Diff = MeshComparison.Compare(baseInfo ?? left ?? empty, right);
+        }
+
+        // The view is still on screen and still showing these versions.
+        private bool Showing(string cacheKey) => panel != null && key == cacheKey;
+
+        // Runs on the editor's update until it returns true. Not on the view's scheduler: a view taken off screen (another
+        // file selected) stops its scheduler, and the load must still end (another view of the same versions waits on it).
+        private static void Pump(Func<bool> tick)
+        {
+            void Update()
+            {
+                bool done;
+                try { done = tick(); }
+                catch (Exception ex) { Debug.LogException(ex); done = true; }
+                if (done) EditorApplication.update -= Update;
+            }
+            EditorApplication.update += Update;
+        }
+
+        // Hands a background task over once it ended.
+        private static void WhenDone<T>(T task, string cacheKey, Action<T> then) where T : Task
+        {
+            Pump(() =>
+            {
+                if (!task.IsCompleted) return false;
+                then(task);
+                return true;
+            });
+        }
+
+        // The meshes are made a few milliseconds' worth per frame (the editor never waits on a whole avatar), then the
+        // comparison shows.
+        private void Finish(string cacheKey, string scratch, Loaded loaded)
+        {
+            DeleteFolder(scratch);
+            var steps = new Queue<Action>();
+            if (string.IsNullOrEmpty(loaded.Error))
+            {
+                foreach (var side in new[] { loaded.Left, loaded.Right })
+                    foreach (var step in MeshSteps(side)) steps.Enqueue(step);
+                foreach (var info in loaded.Infos.Where(i => i != null && i != loaded.Left.Info && i != loaded.Right.Info))
+                    foreach (var part in info.Parts.Where(p => p.Mesh == null && p.Points != null))
+                        steps.Enqueue(() => part.Mesh = MeshComparison.CreateMesh(part));
+            }
+            int total = steps.Count;
+            if (total > 0 && Showing(cacheKey)) Working("Preparing the meshes…");
+            Pump(() =>
+            {
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    while (steps.Count > 0 && watch.ElapsedMilliseconds < 12) steps.Dequeue()();
+                }
+                catch (Exception ex)
+                {
+                    loaded.Error = ex.Message;
+                    steps.Clear();
+                }
+                if (steps.Count > 0)
+                {
+                    if (Showing(cacheKey)) status.text = "Preparing the meshes… " + (total - steps.Count) + " of " + total;
+                    return false;
+                }
+                Done(cacheKey, null);
+                current?.Release();
+                current = loaded;
+                if (Showing(cacheKey)) Show(loaded);
+                return true;
+            });
+        }
+
+        private static void Done(string cacheKey, string scratch)
+        {
+            if (loading == cacheKey) loading = null;
+            if (scratch != null) DeleteFolder(scratch);
+        }
+
+        // Each part's own mesh when read from a file, and a copy with the change colours in its vertex colours (the
+        // version's own mesh is never touched).
+        private static IEnumerable<Action> MeshSteps(Side side)
+        {
+            if (side.Info == null) yield break;
             foreach (var part in side.Info.Parts)
             {
-                var diff = side.Diff.FirstOrDefault(d => d.Path == part.Path);
-                if (diff?.Colors == null || diff.Colors.Length != part.Mesh.vertexCount) continue;
-                var copy = Object.Instantiate(part.Mesh);
-                copy.hideFlags = HideFlags.HideAndDontSave;
-                copy.colors = diff.Colors;
-                side.Coloured[part.Path] = copy;
+                var diff = side.Diff?.FirstOrDefault(d => d.Path == part.Path);
+                var colors = diff?.Colors != null && diff.Colors.Length == part.VertexCount ? diff.Colors : null;
+                if (part.Mesh == null && part.Points != null)
+                {
+                    yield return () =>
+                    {
+                        part.Mesh = MeshComparison.CreateMesh(part);
+                        if (colors != null) side.Coloured[part.Path] = MeshComparison.CreateMesh(part, colors);
+                    };
+                }
+                else if (colors != null && part.Mesh != null)
+                {
+                    yield return () =>
+                    {
+                        var copy = Object.Instantiate(part.Mesh);
+                        copy.hideFlags = HideFlags.HideAndDontSave;
+                        copy.colors = colors;
+                        side.Coloured[part.Path] = copy;
+                    };
+                }
             }
         }
 

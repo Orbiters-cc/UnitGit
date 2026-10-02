@@ -1,10 +1,13 @@
 using System;
+using Orbiters.Toolkit.Editor.Processes;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using UnityEditor;
 
 namespace Orbiters.UnitGit.Editor
@@ -52,6 +55,9 @@ namespace Orbiters.UnitGit.Editor
     internal static class UnitGitConflicts
     {
         public const string MineLabel = "Mine", BaseLabel = "Base", TheirsLabel = "Theirs";
+        private const int UnityMergeTimeoutMilliseconds = 120000;
+        // Git's own test for binary content: a zero byte in the first 8000.
+        private const int BinarySniffBytes = 8000;
 
         public static bool IsConflict(UnitGitStatusEntry entry)
         {
@@ -76,34 +82,88 @@ namespace Orbiters.UnitGit.Editor
 
         public static UnitGitOperation Operation(string root, out string title)
         {
-            string git = Path.Combine(root, ".git");
             title = string.Empty;
-            if (File.Exists(Path.Combine(git, "MERGE_HEAD")))
+            // Git says where these files are: in a linked worktree ".git" is a file, and they live elsewhere.
+            string mergeHead = UnitGitPaths.GitPath(root, "MERGE_HEAD");
+            if (mergeHead == null) return UnitGitOperation.None;
+            if (File.Exists(mergeHead))
             {
-                string message = File.Exists(Path.Combine(git, "MERGE_MSG")) ? File.ReadAllLines(Path.Combine(git, "MERGE_MSG")).FirstOrDefault() ?? string.Empty : string.Empty;
+                string message = FirstLine(UnitGitPaths.GitPath(root, "MERGE_MSG"));
                 title = message.Length > 0 ? message : "Merge";
                 return UnitGitOperation.Merge;
             }
-            if (File.Exists(Path.Combine(git, "CHERRY_PICK_HEAD"))) { title = "Copying a commit"; return UnitGitOperation.CherryPick; }
-            if (File.Exists(Path.Combine(git, "REVERT_HEAD"))) { title = "Reverting a commit"; return UnitGitOperation.Revert; }
-            if (Directory.Exists(Path.Combine(git, "rebase-merge")) || Directory.Exists(Path.Combine(git, "rebase-apply"))) { title = "Rebasing"; return UnitGitOperation.Rebase; }
+            if (File.Exists(UnitGitPaths.GitPath(root, "CHERRY_PICK_HEAD"))) { title = "Copying a commit"; return UnitGitOperation.CherryPick; }
+            if (File.Exists(UnitGitPaths.GitPath(root, "REVERT_HEAD"))) { title = "Reverting a commit"; return UnitGitOperation.Revert; }
+            if (Directory.Exists(UnitGitPaths.GitPath(root, "rebase-merge")) || Directory.Exists(UnitGitPaths.GitPath(root, "rebase-apply"))) { title = "Rebasing"; return UnitGitOperation.Rebase; }
             return UnitGitOperation.None;
         }
 
-        /// <summary>A stage of the conflicted file: 1 base, 2 mine, 3 theirs. Null when that side has no such file.</summary>
-        public static string Stage(UnitGitService git, string path, int stage)
+        private static string FirstLine(string path)
         {
-            var result = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "show", ":" + stage + ":" + path);
-            // Git's output arrives line by line; Unity text assets use LF, so the sides are compared and written with LF.
-            return result.Success ? Normalize(result.StandardOutput) : null;
+            try
+            {
+                return File.Exists(path) ? File.ReadLines(path).FirstOrDefault() ?? string.Empty : string.Empty;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                return string.Empty;
+            }
         }
 
-        public static bool IsBinary(string text)
+        /// <summary>
+        /// The versions Git holds of a conflicted file: 1 base, 2 mine, 3 theirs. Empty when the file is not in conflict.
+        /// Throws when Git cannot list them: a failed read is never taken for a side that deleted the file.
+        /// </summary>
+        public static HashSet<int> Stages(UnitGitService git, string path)
         {
-            if (text == null) return false;
-            int limit = Math.Min(text.Length, 8000);
-            for (int i = 0; i < limit; i++) if (text[i] == '\0') return true;
-            return false;
+            var listed = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "-c", "core.quotePath=true", "--literal-pathspecs", "ls-files", "--unmerged", "--", path);
+            if (!listed.Success) throw new IOException("Git could not list the versions of " + path + ": " + listed.Message);
+            var stages = new HashSet<int>();
+            foreach (string line in UnitGitService.SplitLines(listed.StandardOutput))
+            {
+                // "<mode> <object> <stage>\t<path>"
+                int tab = line.IndexOf('\t');
+                if (tab < 0 || UnitGitService.UnquotePath(line.Substring(tab + 1)) != path) continue;
+                string[] fields = line.Substring(0, tab).Split(' ');
+                if (fields.Length == 3 && int.TryParse(fields[2], out int stage) && stage >= 1 && stage <= 3) stages.Add(stage);
+            }
+            return stages;
+        }
+
+        /// <summary>
+        /// One version of a conflicted file (1 base, 2 mine, 3 theirs), read byte for byte. Unity text assets use LF, so the
+        /// sides are compared and written with LF. Null when the version is binary: it is never read as text. The version
+        /// must exist (see <see cref="Stages"/>); a failed read throws.
+        /// </summary>
+        public static string Stage(UnitGitService git, string path, int stage)
+        {
+            string file = Path.Combine(Path.GetTempPath(), "unitgit-stage-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                if (!git.WriteBlob(":" + stage + ":" + path, file))
+                    throw new IOException("Git could not read " + (stage == 2 ? "your" : stage == 3 ? "their" : "the common") + " version of " + path + ".");
+                using (var stream = File.OpenRead(file))
+                {
+                    var head = new byte[(int)Math.Min(stream.Length, BinarySniffBytes)];
+                    int read = 0;
+                    for (int n; read < head.Length && (n = stream.Read(head, read, head.Length - read)) > 0;) read += n;
+                    if (Array.IndexOf(head, (byte)0, 0, read) >= 0) return null;
+                }
+                return Normalize(Encoding.UTF8.GetString(File.ReadAllBytes(file)));
+            }
+            finally
+            {
+                try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+        }
+
+        /// <summary>The file on disk as it is now (a hash of its bytes, or "missing"), to tell later whether it changed.</summary>
+        public static string FileState(string fullPath)
+        {
+            if (!File.Exists(fullPath)) return "missing";
+            using (var hash = SHA256.Create())
+            using (var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                return Convert.ToBase64String(hash.ComputeHash(stream));
         }
 
         // ---- Unity's merge ---------------------------------------------------------------------------------------------
@@ -121,7 +181,8 @@ namespace Orbiters.UnitGit.Editor
         /// Runs Unity's merge on the three versions in a scratch folder (never on the project file). "--fallback none" keeps
         /// it from opening another merge program when it cannot decide.
         /// </summary>
-        public static UnityMergeResult UnityMerge(string tool, string mine, string baseText, string theirs, string extension)
+        public static UnityMergeResult UnityMerge(string tool, string mine, string baseText, string theirs, string extension,
+            int timeoutMilliseconds = UnityMergeTimeoutMilliseconds)
         {
             var result = new UnityMergeResult { Available = tool != null };
             if (tool == null)
@@ -138,7 +199,6 @@ namespace Orbiters.UnitGit.Editor
                 File.WriteAllText(basePath, baseText ?? string.Empty);
                 File.WriteAllText(minePath, mine ?? string.Empty);
                 File.WriteAllText(theirsPath, theirs ?? string.Empty);
-                File.WriteAllText(output, mine ?? string.Empty);
                 var start = new ProcessStartInfo(tool, "merge -h -p --force --fallback none " + Quote(basePath) + " " + Quote(theirsPath) + " " + Quote(minePath) + " " + Quote(output))
                 {
                     UseShellExecute = false,
@@ -147,21 +207,23 @@ namespace Orbiters.UnitGit.Editor
                     RedirectStandardInput = true,
                     CreateNoWindow = true
                 };
-                using (var process = Process.Start(start))
+                var process = EditorProcessRunner.Run(start, timeoutMilliseconds);
+                if (process.TimedOut || process.Cancelled)
                 {
-                    process.StandardInput.Close();
-                    var stdout = process.StandardOutput.ReadToEndAsync();
-                    string stderr = process.StandardError.ReadToEnd();
-                    if (!process.WaitForExit(120000))
-                    {
-                        try { process.Kill(); } catch (InvalidOperationException) { }
-                        result.Message = "Unity's merge did not finish in two minutes.";
-                        return result;
-                    }
-                    result.Clean = process.ExitCode == 0;
+                    result.Message = process.Cancelled ? "Unity's merge was interrupted by editor reload or shutdown."
+                        : "Unity's merge did not finish in " + timeoutMilliseconds / 1000 + " seconds.";
+                    return result;
+                }
+                ParseConflicts(process.StandardOutput, result);
+                if (process.Success && File.Exists(output))
+                {
                     result.Output = File.ReadAllText(output);
-                    ParseConflicts(stdout.Result, result);
-                    if (!result.Clean && result.Conflicts.Count == 0) result.Message = (stdout.Result + stderr).Trim();
+                    result.Clean = true;
+                }
+                else if (result.Conflicts.Count == 0)
+                {
+                    string said = (process.StandardOutput + process.StandardError).Trim();
+                    result.Message = said.Length > 0 ? said : "Unity's merge stopped without a result (exit code " + process.ExitCode + ").";
                 }
             }
             catch (Exception ex) when (ex is IOException || ex is System.ComponentModel.Win32Exception || ex is UnauthorizedAccessException)
@@ -201,26 +263,57 @@ namespace Orbiters.UnitGit.Editor
 
         // ---- Parts ------------------------------------------------------------------------------------------------------
 
-        /// <summary>The file as shared parts and conflicting parts, from Git's line merge of the three versions.</summary>
+        /// <summary>
+        /// The file as shared parts and conflicting parts, from Git's line merge of the three versions. Throws when the merge
+        /// failed or timed out: its parts are never guessed from what it left behind.
+        /// </summary>
         public static List<ConflictBlock> Blocks(UnitGitService git, string mine, string baseText, string theirs)
         {
+            mine = Normalize(mine);
+            baseText = Normalize(baseText);
+            theirs = Normalize(theirs);
             string folder = Path.Combine(Path.GetTempPath(), "unitgit-blocks-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(folder);
             try
             {
                 string m = Path.Combine(folder, "mine"), b = Path.Combine(folder, "base"), t = Path.Combine(folder, "theirs");
-                File.WriteAllText(m, Normalize(mine));
-                File.WriteAllText(b, Normalize(baseText));
-                File.WriteAllText(t, Normalize(theirs));
-                // Exit status is the number of conflicts; the merged text is on standard output either way.
-                var merged = git.RunGit(UnitGitService.LongTimeoutMilliseconds, "merge-file", "-p", "--diff3", "-L", MineLabel, "-L", BaseLabel, "-L", TheirsLabel, m, b, t);
-                if (merged.ExitCode < 0 || merged.ExitCode > 127) throw new InvalidOperationException(merged.Message);
-                return Parse(merged.StandardOutput);
+                File.WriteAllText(m, mine);
+                File.WriteAllText(b, baseText);
+                File.WriteAllText(t, theirs);
+                // Git writes the merge over "mine" byte for byte; its standard output would come back line by line, which
+                // loses whether the file ends with a line break. The exit status is the number of conflicts, at most 127.
+                var merged = git.RunGit(UnitGitService.LongTimeoutMilliseconds, "merge-file", "--diff3", "-L", MineLabel, "-L", BaseLabel, "-L", TheirsLabel, m, b, t);
+                if (merged.TimedOut || merged.ExitCode < 0 || merged.ExitCode > 127)
+                    throw new IOException("Git could not merge the versions: " + merged.Message);
+                var blocks = Parse(Encoding.UTF8.GetString(File.ReadAllBytes(m)));
+                // A run that never happened also ends in 1: the count Git reports must be the parts it wrote.
+                int conflicts = blocks.Count(block => block.IsConflict);
+                if (conflicts != merged.ExitCode && !(merged.ExitCode == 127 && conflicts > 127))
+                    throw new IOException("Git's merge reported " + merged.ExitCode + " conflicting part" + (merged.ExitCode == 1 ? "" : "s") + " but wrote " + conflicts +
+                                          ". " + (merged.Message.Length > 0 ? merged.Message : "The file may already hold conflict markers: keep a whole side instead."));
+                KeepEnding(blocks, mine, baseText, theirs);
+                return blocks;
             }
             finally
             {
                 try { Directory.Delete(folder, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
+        }
+
+        // Git ends each side of a conflict with a line break, even at the end of a file that had none. A side that ends the
+        // file gets its own ending back, so choosing it writes the end of the file as that side had it.
+        private static void KeepEnding(List<ConflictBlock> blocks, string mine, string baseText, string theirs)
+        {
+            var last = blocks.Count > 0 ? blocks[blocks.Count - 1] : null;
+            if (last == null || !last.IsConflict) return;
+            last.Mine = Ending(last.Mine, mine);
+            last.Base = Ending(last.Base, baseText);
+            last.Theirs = Ending(last.Theirs, theirs);
+        }
+
+        private static string Ending(string part, string whole)
+        {
+            return part.EndsWith("\n", StringComparison.Ordinal) && !whole.EndsWith("\n", StringComparison.Ordinal) ? part.Substring(0, part.Length - 1) : part;
         }
 
         internal static List<ConflictBlock> Parse(string merged)
@@ -296,18 +389,26 @@ namespace Orbiters.UnitGit.Editor
             return string.Empty;
         }
 
-        /// <summary>The file with every conflicting part replaced by its choice. Null while a part has no choice.</summary>
+        /// <summary>
+        /// The file with every conflicting part replaced by its choice, ending as the merge does (a file without a final line
+        /// break keeps it that way). Null while a part has no choice.
+        /// </summary>
         public static string Compose(IList<ConflictBlock> blocks)
         {
             var builder = new StringBuilder();
             foreach (var block in blocks)
             {
-                if (!block.IsConflict) { builder.Append(block.Common); if (!block.Common.EndsWith("\n", StringComparison.Ordinal)) builder.Append('\n'); continue; }
+                if (!block.IsConflict) { builder.Append(block.Common); continue; }
                 switch (block.Choice)
                 {
                     case ConflictChoice.Mine: builder.Append(block.Mine); break;
                     case ConflictChoice.Theirs: builder.Append(block.Theirs); break;
-                    case ConflictChoice.Both: builder.Append(block.Mine).Append(block.Theirs); break;
+                    case ConflictChoice.Both:
+                        builder.Append(block.Mine);
+                        // Mine may end the file without a line break: theirs still starts on a line of its own.
+                        if (block.Mine.Length > 0 && !block.Mine.EndsWith("\n", StringComparison.Ordinal)) builder.Append('\n');
+                        builder.Append(block.Theirs);
+                        break;
                     default: return null;
                 }
             }
@@ -316,23 +417,62 @@ namespace Orbiters.UnitGit.Editor
 
         // ---- Resolving --------------------------------------------------------------------------------------------------
 
-        /// <summary>Writes the resolved text over the project file and marks it resolved.</summary>
-        public static GitCommandResult Resolve(UnitGitService git, string path, string text)
+        /// <summary>
+        /// Writes the resolved text over the project file and marks it resolved. Refused when the file on disk is no longer
+        /// <paramref name="expected"/>, its <see cref="FileState"/> when the parts were read: a choice made on an older read
+        /// never overwrites edits made since.
+        /// </summary>
+        public static GitCommandResult Resolve(UnitGitService git, string path, string text, string expected)
         {
+            if (text == null) return Failure("Choose every part before saving " + path + ".");
             string full = Path.Combine(git.ProjectRoot, path);
+            if (FileState(full) != expected)
+                return Failure(path + " changed on disk after Unit Git read it, so nothing was saved. Look at it again, then choose.");
             Directory.CreateDirectory(Path.GetDirectoryName(full));
             File.WriteAllText(full, text);
             return git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "add", "--", path);
         }
 
-        /// <summary>Keeps one side for the whole file, including "the file is deleted" when that side deleted it.</summary>
+        /// <summary>
+        /// Keeps one side for the whole file, including "the file is deleted" when that side has no file. Which sides exist
+        /// comes from Git's list of versions, and the kept version is written by Git byte for byte, never read as text. Any
+        /// failed read stops here: it never becomes a deletion, and the project file is replaced only by a complete version.
+        /// </summary>
         public static GitCommandResult TakeSide(UnitGitService git, string path, bool mine)
         {
-            string side = mine ? "--ours" : "--theirs";
-            var content = Stage(git, path, mine ? 2 : 3);
-            if (content == null) return git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "rm", "--quiet", "--", path);
-            var checkout = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "checkout", side, "--", path);
-            if (!checkout.Success) return checkout;
+            int stage = mine ? 2 : 3;
+            HashSet<int> stages;
+            try
+            {
+                stages = Stages(git, path);
+            }
+            catch (IOException ex)
+            {
+                return Failure(ex.Message);
+            }
+            if (stages.Count == 0) return Failure(path + " is not in conflict any more. Refresh, then look at it again.");
+            if (!stages.Contains(stage))
+                return git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "rm", "--quiet", "--", path);
+
+            // Git writes the version to a temporary file next to the project (with the filters a checkout applies) and names it.
+            var written = git.RunGit(UnitGitService.LongTimeoutMilliseconds, "checkout-index", "--temp", "--stage=" + stage, "--", path);
+            if (!written.Success) return written;
+            string name = UnitGitService.SplitLines(written.StandardOutput).FirstOrDefault()?.Split('\t')[0] ?? string.Empty;
+            string temporary = Path.Combine(git.ProjectRoot, name);
+            if (name.Length == 0 || name.IndexOfAny(new[] { '/', '\\' }) >= 0 || !File.Exists(temporary))
+                return Failure("Git did not say where it wrote the version of " + path + ": " + written.Message);
+            string full = Path.Combine(git.ProjectRoot, path);
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(full));
+                if (File.Exists(full)) File.Replace(temporary, full, null);
+                else File.Move(temporary, full);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                try { File.Delete(temporary); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                return Failure("Could not write " + path + ": " + ex.Message);
+            }
             return git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "add", "--", path);
         }
 
@@ -373,5 +513,7 @@ namespace Orbiters.UnitGit.Editor
         private static string Normalize(string text) => (text ?? string.Empty).Replace("\r\n", "\n");
 
         private static string Quote(string path) => "\"" + path.Replace("\"", "\\\"") + "\"";
+
+        private static GitCommandResult Failure(string message) => new GitCommandResult { ExitCode = 1, StandardError = message };
     }
 }

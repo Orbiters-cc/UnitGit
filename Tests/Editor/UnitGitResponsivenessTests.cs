@@ -137,7 +137,9 @@ namespace Orbiters.UnitGit.Editor.Tests
                     yield return null;
                 var lists = host.rootVisualElement.Query<ListView>().ToList();
                 Assert.That(lists, Has.Count.EqualTo(2));
-                Assert.That(lists.All(list => list.itemsSource.Count == 100000), Is.True);
+                // The changes list adds its group header ("Changes") above the files.
+                Assert.That(lists[0].itemsSource.Count, Is.EqualTo(100001));
+                Assert.That(lists[1].itemsSource.Count, Is.EqualTo(100000));
                 Assert.That(host.rootVisualElement.Query<Button>(className: "unitgit-change-file-row").ToList().Count, Is.LessThan(60));
                 var labels = host.rootVisualElement.Query<Label>().ToList();
                 Assert.That(labels.Count, Is.GreaterThan(20));

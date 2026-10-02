@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using UnityEditor;
 
@@ -34,6 +37,8 @@ namespace Orbiters.UnitGit.Editor
         public const string Extension = ".bundle";
         private const string AutomaticSessionKey = "Orbiters.UnitGit.Backups.AutomaticChecked";
         private static readonly Dictionary<string, UnitGitBackup> Checked = new Dictionary<string, UnitGitBackup>(StringComparer.OrdinalIgnoreCase);
+        // What follows a project's own prefix in its backup names: the time it was made, and a number when two share it.
+        private static readonly Regex Stamp = new Regex(@"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(_\d+)?\.bundle$");
 
         public static string DefaultFolder(string projectRoot)
         {
@@ -53,6 +58,27 @@ namespace Orbiters.UnitGit.Editor
             string name = System.IO.Path.GetFileName(System.IO.Path.GetFullPath(projectRoot).TrimEnd('\\', '/'));
             foreach (char invalid in System.IO.Path.GetInvalidFileNameChars()) name = name.Replace(invalid, '_');
             return string.IsNullOrWhiteSpace(name) ? "Project" : name;
+        }
+
+        /// <summary>
+        /// How this project's backups are named: "Avatar_3f9a12c4_", its folder name and a mark of its full path. Projects
+        /// can share a backup folder, and even a name; each one only ever counts, and deletes, its own backups.
+        /// </summary>
+        internal static string OwnPrefix(string projectRoot)
+        {
+            string full = System.IO.Path.GetFullPath(projectRoot).TrimEnd('\\', '/').ToUpperInvariant();
+            using (var hash = SHA256.Create())
+            {
+                byte[] mark = hash.ComputeHash(Encoding.UTF8.GetBytes(full));
+                return ProjectName(projectRoot) + "_" + BitConverter.ToString(mark, 0, 4).Replace("-", string.Empty).ToLowerInvariant() + "_";
+            }
+        }
+
+        /// <summary>True for a backup this project made, by its name; anything else in the folder is never touched.</summary>
+        internal static bool IsOwn(string path, string projectRoot)
+        {
+            string name = System.IO.Path.GetFileName(path), prefix = OwnPrefix(projectRoot);
+            return name.StartsWith(prefix, StringComparison.Ordinal) && Stamp.IsMatch(name.Substring(prefix.Length));
         }
 
         /// <summary>True when the folder is inside the project: a backup there is lost with the project.</summary>
@@ -86,11 +112,14 @@ namespace Orbiters.UnitGit.Editor
             return backups.OrderByDescending(b => b.Created).ToList();
         }
 
-        /// <summary>Writes a new backup (to a temporary name, checked, then renamed) and removes the oldest beyond <paramref name="keep"/>.</summary>
+        /// <summary>
+        /// Writes a new backup (to a temporary name, checked, then renamed) and removes this project's oldest beyond
+        /// <paramref name="keep"/>. Other files in the folder, other projects' backups included, are never removed.
+        /// </summary>
         public static GitCommandResult Create(UnitGitService git, string folder, int keep)
         {
             Directory.CreateDirectory(folder);
-            string name = ProjectName(git.ProjectRoot) + "_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss", CultureInfo.InvariantCulture);
+            string name = OwnPrefix(git.ProjectRoot) + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss", CultureInfo.InvariantCulture);
             string final = System.IO.Path.Combine(folder, name + Extension);
             for (int n = 2; File.Exists(final); n++) final = System.IO.Path.Combine(folder, name + "_" + n + Extension);
             string temporary = final + ".partial";
@@ -110,8 +139,15 @@ namespace Orbiters.UnitGit.Editor
             check.Path = System.IO.Path.GetFullPath(final);
             Remember(final, check);
             if (keep > 0)
-                foreach (var old in List(folder).Skip(keep)) TryDelete(old.Path);
+                foreach (var old in Own(List(folder), git.ProjectRoot).Where(b => !string.Equals(b.Path, check.Path, StringComparison.OrdinalIgnoreCase)).Skip(keep - 1))
+                    Delete(old.Path);
             return new GitCommandResult { StandardOutput = "Backed up " + check.Branches + " branch" + (check.Branches == 1 ? "" : "es") + " to " + System.IO.Path.GetFileName(final) + "." };
+        }
+
+        // This project's backups among everything in the folder, in the same order.
+        private static IEnumerable<UnitGitBackup> Own(IEnumerable<UnitGitBackup> backups, string projectRoot)
+        {
+            return backups.Where(backup => IsOwn(backup.Path, projectRoot));
         }
 
         /// <summary>
@@ -144,7 +180,7 @@ namespace Orbiters.UnitGit.Editor
 
         /// <summary>
         /// Recreates the project from a backup in a new, empty folder: its files at the commit that was checked out when the
-        /// backup was made. Unity rebuilds the Library on first open.
+        /// backup was made, checked before success is reported. Unity rebuilds the Library on first open.
         /// </summary>
         public static GitCommandResult RestoreCopy(UnitGitService git, string bundle, string destination)
         {
@@ -152,30 +188,37 @@ namespace Orbiters.UnitGit.Editor
                 return Failure("Choose an empty folder: " + destination + " already has files.");
             var heads = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "bundle", "list-heads", bundle);
             if (!heads.Success) return heads;
-            // Every branch and tag becomes a local one, with nothing pointing back at the backup file.
+            var refs = UnitGitService.SplitLines(heads.StandardOutput).Select(line => line.Trim().Split(' ')).Where(parts => parts.Length == 2).ToList();
+            string commit = refs.Where(parts => parts[1] == "HEAD").Select(parts => parts[0]).FirstOrDefault();
+            if (commit == null) return Failure("This backup does not record which commit was checked out, so its files cannot be restored.");
+            // A bundle does not record the branch HEAD was on. A branch that is alone at that commit is the one; with none
+            // there HEAD was detached, and with several the copy stays on the commit itself rather than guess.
+            var branches = refs.Where(parts => parts[0] == commit && parts[1].StartsWith("refs/heads/", StringComparison.Ordinal))
+                .Select(parts => parts[1].Substring("refs/heads/".Length)).ToList();
+
+            // Every branch and tag becomes a local one, with nothing pointing back at the backup file; HEAD brings the
+            // checked-out commit even when no branch holds it.
             Directory.CreateDirectory(destination);
             var copy = new UnitGitService(destination);
             var result = copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "init", "--quiet");
             if (result.Success)
-                result = copy.RunGit(UnitGitService.LongTimeoutMilliseconds, "fetch", "--quiet", "--update-head-ok", bundle, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*");
-            string branch = CheckedOutBranch(heads.StandardOutput);
-            if (result.Success && branch != null)
-                result = copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "symbolic-ref", "HEAD", "refs/heads/" + branch);
+                result = copy.RunGit(UnitGitService.LongTimeoutMilliseconds, "fetch", "--quiet", "--update-head-ok", bundle, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "HEAD");
+            if (result.Success)
+                result = branches.Count == 1
+                    ? copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "symbolic-ref", "HEAD", "refs/heads/" + branches[0])
+                    : copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "HEAD", commit);
             if (result.Success)
                 result = copy.RunGit(UnitGitService.LongTimeoutMilliseconds, "reset", "--hard", "--quiet");
             if (!result.Success) return result;
-            result.StandardOutput = "Restored the project to " + destination + ". Open it with Unity Hub (Add project from disk).";
-            return result;
-        }
+            string shortCommit = commit.Substring(0, Math.Min(7, commit.Length));
+            var restored = copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "HEAD^{commit}");
+            if (!restored.Success || restored.StandardOutput.Trim() != commit)
+                return Failure("The copy in " + destination + " is not at the backed-up commit " + shortCommit + ": do not use it.");
 
-        // The branch the backup's HEAD pointed to: the one at the same commit, preferring main and master.
-        private static string CheckedOutBranch(string listHeads)
-        {
-            var refs = listHeads.Split('\n').Select(line => line.Trim().Split(' ')).Where(parts => parts.Length == 2).ToList();
-            string head = refs.Where(parts => parts[1] == "HEAD").Select(parts => parts[0]).FirstOrDefault();
-            var branches = refs.Where(parts => parts[1].StartsWith("refs/heads/", StringComparison.Ordinal))
-                .Where(parts => head == null || parts[0] == head).Select(parts => parts[1].Substring(11)).ToList();
-            return branches.FirstOrDefault(name => name == "main") ?? branches.FirstOrDefault(name => name == "master") ?? branches.FirstOrDefault();
+            string where = branches.Count == 1 ? "on branch " + branches[0]
+                : branches.Count == 0 ? "at commit " + shortCommit + " with no branch checked out, as when the backup was made"
+                : "at commit " + shortCommit + " with no branch checked out: " + string.Join(", ", branches) + " point there, check out the one you were on";
+            return new GitCommandResult { StandardOutput = "Restored the project to " + destination + ", " + where + ". Open it with Unity Hub (Add project from disk)." };
         }
 
         public static bool Delete(string path)
@@ -215,7 +258,7 @@ namespace Orbiters.UnitGit.Editor
 
         internal static bool IsDue(UnitGitService git, string folder)
         {
-            var last = List(folder).FirstOrDefault();
+            var last = Own(List(folder), git.ProjectRoot).FirstOrDefault();
             if (last == null) return HasHistory(git);
             if ((DateTime.Now - last.Created).TotalHours < 24) return false;
             var current = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags");

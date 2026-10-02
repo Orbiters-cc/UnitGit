@@ -5,6 +5,7 @@ using UnityEngine.UIElements;
 
 namespace Orbiters.UnitGit.Editor
 {
+    /// <summary>A message to write (a commit's, a shelf's name): Ctrl+Enter confirms, Escape cancels.</summary>
     internal sealed class UnitGitCommitMessagePromptWindow : EditorWindow
     {
         private Action<string> onSubmit;
@@ -20,55 +21,39 @@ namespace Orbiters.UnitGit.Editor
             window.message = initialMessage ?? string.Empty;
             window.submitLabel = string.IsNullOrWhiteSpace(submitLabel) ? "Apply" : submitLabel;
             window.onSubmit = onSubmit;
-            window.minSize = new Vector2(520f, 340f);
+            window.minSize = new Vector2(480f, 250f);
             window.ShowUtility();
         }
 
         private void CreateGUI()
         {
-            var root = rootVisualElement;
-            StyleSheet styleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>("Packages/orbiters.unitgit/Editor/Styles/unitgit.uss");
-            if (styleSheet != null)
-            {
-                root.styleSheets.Add(styleSheet);
-            }
-
-            root.AddToClassList("unitgit-commit-message-prompt");
-
-            var title = new Label(titleContent != null ? titleContent.text : "Commit Message");
-            title.AddToClassList("unitgit-commit-message-title");
-            root.Add(title);
-
-            if (!string.IsNullOrWhiteSpace(summary))
-            {
-                var summaryLabel = new Label(summary);
-                summaryLabel.AddToClassList("unitgit-commit-message-summary");
-                root.Add(summaryLabel);
-            }
-
-            var field = new TextField
-            {
-                multiline = true,
-                value = message
-            };
-            field.AddToClassList("unitgit-commit-message-field");
+            var body = UnitGitDialog.Setup(this, titleContent != null ? titleContent.text : "Message", summary);
+            var field = new TextField { multiline = true, value = message };
+            field.AddToClassList("ug-dialog__field");
+            field.AddToClassList("ug-dialog__field--multiline");
             field.RegisterValueChangedCallback(evt => message = evt.newValue);
-            root.Add(field);
+            body.Add(field);
 
-            var actions = new VisualElement();
-            actions.AddToClassList("unitgit-commit-message-actions");
-            actions.Add(new Button(() => Close()) { text = "Cancel" });
-            actions.Add(new Button(() =>
+            var actions = UnitGitDialog.Actions(this);
+            actions.Insert(0, UnitGitUi.Text("Ctrl+Enter", "ug-dialog__shortcut"));
+            actions.Add(UnitGitUi.Pill("Cancel", Close, "ghost"));
+            void Submit()
             {
                 onSubmit?.Invoke(message);
                 Close();
-            })
+            }
+            actions.Add(UnitGitUi.Pill(submitLabel, Submit, "primary"));
+            field.RegisterCallback<KeyDownEvent>(evt =>
             {
-                text = submitLabel
-            });
-            root.Add(actions);
-
-            field.schedule.Execute(() => field.Focus());
+                if ((evt.keyCode != KeyCode.Return && evt.keyCode != KeyCode.KeypadEnter) || !(evt.ctrlKey || evt.commandKey)) return;
+                evt.StopPropagation();
+                Submit();
+            }, TrickleDown.TrickleDown);
+            field.schedule.Execute(() =>
+            {
+                field.Focus();
+                field.SelectAll();
+            }).StartingIn(30);
         }
     }
 }

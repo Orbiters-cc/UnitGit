@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using UnityEngine;
 
 namespace Orbiters.UnitGit.Editor
@@ -74,14 +76,11 @@ namespace Orbiters.UnitGit.Editor
     /// </summary>
     public static class UnitGitReleases
     {
-        private sealed class ReleaseFileSnapshot
-        {
-            public bool FileExists;
-            public string FileContents = string.Empty;
-            public bool HasIndexEntry;
-            public string IndexMode = string.Empty;
-            public string IndexHash = string.Empty;
-        }
+        // One change to the catalog at a time in this editor: each reads it, adds to it and commits it, and a second one in
+        // between would write over the first one's entry or roll the file back under it. A second one is refused, not queued,
+        // so the editor never waits behind a long commit.
+        private static readonly object CatalogGate = new object();
+        private const string CatalogBusyMessage = "Another release is being recorded in " + ReleasesFileName + ". Try again when it is done.";
 
         public const int ApiVersion = 2;
         public const string CommitFilesCapability = "commit-files";
@@ -206,6 +205,11 @@ namespace Orbiters.UnitGit.Editor
                 return Fail("Release id is required.");
             }
 
+            if (!Monitor.TryEnter(CatalogGate))
+            {
+                return Fail(CatalogBusyMessage);
+            }
+
             try
             {
                 if (!TryLoad(projectRoot, out UnitGitReleaseFile file, out string error))
@@ -220,7 +224,7 @@ namespace Orbiters.UnitGit.Editor
                     file.hiddenReleaseIds.Add(normalized);
                 }
 
-                File.WriteAllText(GetReleasesFilePath(projectRoot), JsonUtility.ToJson(file, true));
+                WriteCatalog(projectRoot, file);
                 RaiseChangedExternally();
                 return new UnitGitReleaseResult
                 {
@@ -232,6 +236,10 @@ namespace Orbiters.UnitGit.Editor
             catch (Exception ex)
             {
                 return Fail("Could not hide release row: " + ex.Message);
+            }
+            finally
+            {
+                Monitor.Exit(CatalogGate);
             }
         }
 
@@ -282,45 +290,15 @@ namespace Orbiters.UnitGit.Editor
                 entry.date = DateTime.UtcNow.ToString("o");
             }
 
-            if (!TryLoad(service.ProjectRoot, out UnitGitReleaseFile file, out string loadError))
-            {
-                return FailUnreadableCatalog(loadError);
-            }
-
-            ReleaseFileSnapshot snapshot = CaptureReleaseFileSnapshot(service);
-            try
-            {
-                file.releases.Add(entry);
-                File.WriteAllText(GetReleasesFilePath(service.ProjectRoot), JsonUtility.ToJson(file, true));
-            }
-            catch (Exception ex)
-            {
-                RestoreReleaseFileSnapshot(service, snapshot, out _);
-                return Fail("Could not write " + ReleasesFileName + ": " + ex.Message);
-            }
-
             string title = string.IsNullOrWhiteSpace(commitTitle)
                 ? BuildDefaultCommitTitle(entry)
                 : commitTitle.Trim();
-            UnitGitReleaseResult result = CommitFiles(
+            return RecordRelease(service, entry, () => CommitFiles(
                 service,
                 title,
                 TrailerKey + ": " + entry.id,
                 BuildReleaseCommitPaths(projectRelativePaths),
-                requireReleaseFile: true);
-            if (!result.Success)
-            {
-                if (!RestoreReleaseFileSnapshot(service, snapshot, out string rollbackMessage) &&
-                    !string.IsNullOrWhiteSpace(rollbackMessage))
-                {
-                    result.Message = result.Message + "\nRollback failed: " + rollbackMessage;
-                }
-
-                return result;
-            }
-
-            result.ReleaseId = result.Success ? entry.id : result.ReleaseId;
-            return result;
+                requireReleaseFile: true));
         }
 
         /// <summary>
@@ -360,45 +338,120 @@ namespace Orbiters.UnitGit.Editor
                 entry.date = DateTime.UtcNow.ToString("o");
             }
 
-            if (!TryLoad(service.ProjectRoot, out UnitGitReleaseFile file, out string loadError))
-            {
-                return FailUnreadableCatalog(loadError);
-            }
-
-            ReleaseFileSnapshot snapshot = CaptureReleaseFileSnapshot(service);
-            try
-            {
-                file.releases.Add(entry);
-                File.WriteAllText(GetReleasesFilePath(service.ProjectRoot), JsonUtility.ToJson(file, true));
-            }
-            catch (Exception ex)
-            {
-                RestoreReleaseFileSnapshot(service, snapshot, out _);
-                return Fail("Could not write " + ReleasesFileName + ": " + ex.Message);
-            }
-
             string title = string.IsNullOrWhiteSpace(commitTitle)
                 ? BuildDefaultCommitTitle(entry)
                 : commitTitle.Trim();
-            UnitGitReleaseResult result = StageAllAndCommit(
+            return RecordRelease(service, entry, () => StageAllAndCommit(
                 service,
                 title,
                 TrailerKey + ": " + entry.id,
                 notifyChangedExternally,
-                true);
-            if (!result.Success)
-            {
-                if (!RestoreReleaseFileSnapshot(service, snapshot, out string rollbackMessage) &&
-                    !string.IsNullOrWhiteSpace(rollbackMessage))
-                {
-                    result.Message = result.Message + "\nRollback failed: " + rollbackMessage;
-                }
+                true));
+        }
 
-                return result;
+        /// <summary>
+        /// Adds the entry to the catalog and records it with <paramref name="commit"/>. When the commit fails the catalog goes
+        /// back as it was, unless something else changed it meanwhile: that change is kept. The index is never rolled back:
+        /// a failed checkpoint never touched it (it stages in a private copy).
+        /// </summary>
+        private static UnitGitReleaseResult RecordRelease(UnitGitService service, UnitGitReleaseEntry entry, Func<UnitGitReleaseResult> commit)
+        {
+            if (!Monitor.TryEnter(CatalogGate))
+            {
+                return Fail(CatalogBusyMessage);
             }
 
-            result.ReleaseId = entry.id;
-            return result;
+            try
+            {
+                // Read inside the gate: the catalog as the last release left it.
+                if (!TryLoad(service.ProjectRoot, out UnitGitReleaseFile file, out string loadError))
+                {
+                    return FailUnreadableCatalog(loadError);
+                }
+
+                string path = GetReleasesFilePath(service.ProjectRoot);
+                byte[] before;
+                byte[] written;
+                try
+                {
+                    before = File.Exists(path) ? File.ReadAllBytes(path) : null;
+                }
+                catch (Exception ex)
+                {
+                    return Fail("Could not read " + ReleasesFileName + ": " + ex.Message);
+                }
+
+                try
+                {
+                    file.releases.Add(entry);
+                    written = WriteCatalog(service.ProjectRoot, file);
+                }
+                catch (Exception ex)
+                {
+                    RestoreCatalog(service.ProjectRoot, before, null, out _);
+                    return Fail("Could not write " + ReleasesFileName + ": " + ex.Message);
+                }
+
+                UnitGitReleaseResult result = commit();
+                if (!result.Success)
+                {
+                    if (!RestoreCatalog(service.ProjectRoot, before, written, out string rollbackMessage))
+                    {
+                        result.Message = result.Message + "\n" + rollbackMessage;
+                    }
+
+                    return result;
+                }
+
+                result.ReleaseId = entry.id;
+                return result;
+            }
+            finally
+            {
+                Monitor.Exit(CatalogGate);
+            }
+        }
+
+        private static byte[] WriteCatalog(string projectRoot, UnitGitReleaseFile file)
+        {
+            byte[] bytes = new UTF8Encoding(false).GetBytes(JsonUtility.ToJson(file, true));
+            File.WriteAllBytes(GetReleasesFilePath(projectRoot), bytes);
+            return bytes;
+        }
+
+        /// <summary>
+        /// Puts the catalog back to <paramref name="before"/> (null: no file), but only while it still holds exactly what this
+        /// release wrote (<paramref name="written"/>; null after a write that failed part way).
+        /// </summary>
+        private static bool RestoreCatalog(string projectRoot, byte[] before, byte[] written, out string message)
+        {
+            message = string.Empty;
+            string path = GetReleasesFilePath(projectRoot);
+            try
+            {
+                if (written != null && !(File.Exists(path) && File.ReadAllBytes(path).SequenceEqual(written)))
+                {
+                    message = ReleasesFileName + " was changed by something else meanwhile, so Unit Git left it as it is. " +
+                              "Check that it does not list this release, which was not committed.";
+                    return false;
+                }
+
+                if (before != null)
+                {
+                    File.WriteAllBytes(path, before);
+                }
+                else if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                message = "Rollback failed: " + ex.Message;
+                return false;
+            }
         }
 
         /// <summary>
@@ -584,77 +637,6 @@ namespace Orbiters.UnitGit.Editor
             return paths.ToArray();
         }
 
-        private static ReleaseFileSnapshot CaptureReleaseFileSnapshot(UnitGitService service)
-        {
-            var snapshot = new ReleaseFileSnapshot();
-            string path = GetReleasesFilePath(service.ProjectRoot);
-            snapshot.FileExists = File.Exists(path);
-            if (snapshot.FileExists)
-            {
-                snapshot.FileContents = File.ReadAllText(path);
-            }
-
-            GitCommandResult indexEntry = service.RunGit(10000, "ls-files", "--stage", "--", ReleasesFileName);
-            if (indexEntry.Success && !string.IsNullOrWhiteSpace(indexEntry.StandardOutput))
-            {
-                string line = indexEntry.StandardOutput
-                    .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                    .FirstOrDefault();
-                if (!string.IsNullOrWhiteSpace(line))
-                {
-                    var fields = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                    if (fields.Length >= 2)
-                    {
-                        snapshot.HasIndexEntry = true;
-                        snapshot.IndexMode = fields[0];
-                        snapshot.IndexHash = fields[1];
-                    }
-                }
-            }
-
-            return snapshot;
-        }
-
-        private static bool RestoreReleaseFileSnapshot(UnitGitService service, ReleaseFileSnapshot snapshot, out string message)
-        {
-            message = string.Empty;
-            if (service == null || snapshot == null)
-            {
-                message = "Missing rollback context.";
-                return false;
-            }
-
-            try
-            {
-                string path = GetReleasesFilePath(service.ProjectRoot);
-                if (snapshot.FileExists)
-                {
-                    File.WriteAllText(path, snapshot.FileContents ?? string.Empty);
-                }
-                else if (File.Exists(path))
-                {
-                    File.Delete(path);
-                }
-
-                GitCommandResult indexResult = snapshot.HasIndexEntry
-                    ? service.RunGit(10000, "update-index", "--cacheinfo", snapshot.IndexMode, snapshot.IndexHash, ReleasesFileName)
-                    : service.RunGit(10000, "rm", "--cached", "--ignore-unmatch", "--", ReleasesFileName);
-
-                if (!indexResult.Success)
-                {
-                    message = indexResult.Message;
-                    return false;
-                }
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                message = ex.Message;
-                return false;
-            }
-        }
-
         private static string NormalizeProjectPath(string path)
         {
             return string.IsNullOrWhiteSpace(path)
@@ -730,64 +712,6 @@ namespace Orbiters.UnitGit.Editor
             string tool = Sanitize(entry != null ? entry.tool : null, "release");
             string version = Sanitize(entry != null ? entry.version : null, "0");
             return tool + "-" + version + "-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
-        }
-
-        /// <summary>
-        /// Retries an index-mutating Git command when another process (typically a concurrent
-        /// "git status" refreshing the index) is briefly holding .git/index.lock.
-        /// </summary>
-        private static GitCommandResult RunWithIndexLockRetry(Func<GitCommandResult> operation, int maxAttempts = 6, int delayMilliseconds = 500)
-        {
-            GitCommandResult result = null;
-            for (int attempt = 0; attempt < maxAttempts; attempt++)
-            {
-                result = operation();
-                if (result.Success || !IsIndexLockFailure(result))
-                {
-                    return result;
-                }
-
-                System.Threading.Thread.Sleep(delayMilliseconds);
-            }
-
-            return result;
-        }
-
-        private static bool IsIndexLockFailure(GitCommandResult result)
-        {
-            return result != null &&
-                   !string.IsNullOrEmpty(result.StandardError) &&
-                   result.StandardError.IndexOf("index.lock", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        /// <summary>
-        /// Removes .git/index.lock only when it is clearly stale (left behind by a crashed git
-        /// process): retries already failed and the lock has not been touched for a while.
-        /// </summary>
-        private static bool TryRemoveStaleIndexLock(string projectRoot)
-        {
-            try
-            {
-                string lockPath = Path.Combine(projectRoot, ".git", "index.lock");
-                if (!File.Exists(lockPath))
-                {
-                    return false;
-                }
-
-                if (DateTime.UtcNow - File.GetLastWriteTimeUtc(lockPath) < TimeSpan.FromMinutes(2))
-                {
-                    return false;
-                }
-
-                File.Delete(lockPath);
-                Debug.LogWarning("[UnitGit] Removed stale .git/index.lock left behind by a previous git process.");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning("[UnitGit] Could not remove stale .git/index.lock: " + ex.Message);
-                return false;
-            }
         }
 
         private static string Sanitize(string value, string fallback)

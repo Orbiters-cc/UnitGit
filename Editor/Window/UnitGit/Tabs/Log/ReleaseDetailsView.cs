@@ -274,52 +274,5 @@ namespace Orbiters.UnitGit.Editor
             element.style.borderBottomColor = color;
             element.style.borderLeftColor = color;
         }
-
-        private VisualElement BuildReleaseCheckpointRow(UnitGitCommit commit, UnitGitReleaseEntry release)
-        {
-            VisualElement row = BuildSelectableRow(evt => HandleReleaseRowMouseDown(evt, commit, release), () => SelectCommitFromRow(commit, true));
-            row.AddToClassList("unitgit-release-row");
-
-            // The checkpoint follows the color of the branch its commit belongs to.
-            Color branchColor = GetGraphColor(commit);
-            bool isSelected = selectedCommit != null &&
-                              selectedCommit.FullHash == commit.FullHash &&
-                              string.Equals(selectedReleaseId, commit.ReleaseId, StringComparison.Ordinal);
-            if (isSelected)
-            {
-                row.AddToClassList("unitgit-release-row--selected");
-            }
-
-            SetBorderColor(row, isSelected ? Color.Lerp(branchColor, Color.white, 0.35f) : branchColor);
-            row.style.backgroundColor = new Color(branchColor.r, branchColor.g, branchColor.b, isSelected ? 0.16f : 0.06f);
-
-            string displayName = !string.IsNullOrWhiteSpace(release.name)
-                ? release.name
-                : (!string.IsNullOrWhiteSpace(release.tool) ? release.tool : "Release");
-            var name = new Label(Shorten(displayName, 32));
-            name.AddToClassList("unitgit-release-name");
-            row.Add(name);
-
-            if (!string.IsNullOrWhiteSpace(release.version))
-            {
-                var pill = new Label(Shorten(release.version, 16));
-                pill.AddToClassList("unitgit-release-pill");
-                pill.style.color = branchColor;
-                SetBorderColor(pill, branchColor);
-                row.Add(pill);
-            }
-
-            if (!string.IsNullOrWhiteSpace(release.title))
-            {
-                var title = new Label(Shorten(release.title, 48));
-                title.AddToClassList("unitgit-release-title");
-                row.Add(title);
-            }
-
-            row.tooltip = "Release checkpoint" +
-                          (string.IsNullOrWhiteSpace(release.tool) ? string.Empty : " published by " + release.tool) +
-                          ". Click to inspect the release details.";
-            return row;
-        }
     }
 }

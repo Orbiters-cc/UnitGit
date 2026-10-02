@@ -1,7 +1,6 @@
 using System;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using UnityEditor;
 using UnityEngine;
 
@@ -43,7 +42,6 @@ namespace Orbiters.UnitGit.Editor
             ValidatePackageFiles();
             ValidateParsingSmoke();
             ValidateArgumentEscaping();
-            ValidateNoPushAction();
         }
 
         private static void ValidatePackageFiles()
@@ -70,17 +68,6 @@ namespace Orbiters.UnitGit.Editor
             string command = UnitGitService.FormatCommandLine("gh", "repo", "create", "--source", windowsPath);
             ThrowIf(command.Contains(@"H:\\metaverse\\unity projects\\MCB Test"), "Windows path separators were doubled in command preview.");
             ThrowIf(!command.Contains("\"" + windowsPath + "\""), "Windows path with spaces was not quoted.");
-        }
-
-        private static void ValidateNoPushAction()
-        {
-            BindingFlags flags = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-            string[] methodNames = typeof(UnitGitWindow).GetMethods(flags)
-                .Concat(typeof(UnitGitService).GetMethods(flags))
-                .Select(method => method.Name)
-                .Where(name => name.IndexOf("Push", StringComparison.OrdinalIgnoreCase) >= 0)
-                .ToArray();
-            ThrowIf(methodNames.Length > 0, "UnitGit exposes push-named actions: " + string.Join(", ", methodNames));
         }
 
         private static void ThrowIf(bool condition, string message)

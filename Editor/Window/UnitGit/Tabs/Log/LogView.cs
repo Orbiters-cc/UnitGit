@@ -1,173 +1,441 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.Linq;
-using System.Threading.Tasks;
 using Orbiters.UnitGit;
 using UnityEditor;
-using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.UIElements;
 
 namespace Orbiters.UnitGit.Editor
 {
+    // The Git log, as in JetBrains IDEs: branches on the left, the commit graph with search and filters (branch, user,
+    // date) in the middle, the selected commit's files and message on the right. Selecting only restyles the visible rows
+    // and refills the details: nothing else is rebuilt.
     internal sealed partial class UnitGitWindow
     {
+        private const string BranchesVisiblePref = "Orbiters.UnitGit.Log.BranchesVisible";
+        private const float LogRowHeight = 28f;
+        private readonly UnitGitLogFilter logFilter = new UnitGitLogFilter();
+        private readonly List<LogItem> logItems = new List<LogItem>();
+        private ListView logList;
+        private Label logCountLabel;
+        private float graphWidth = 40f;
+        private bool loadingMoreHistory;
+
+        private sealed class LogItem
+        {
+            public UnitGitCommit Commit;
+            public UnitGitReleaseEntry Release;
+            public UnitGitCommitGraph.Row Graph;
+        }
+
         private VisualElement BuildLogBody()
         {
             var workspace = new VisualElement();
             workspace.AddToClassList("unitgit-workspace");
 
-            workspace.Add(BuildLogToolRail());
-
-            var branchSplit = BuildTrackedSplit(BranchLogSplitPref, 0, 448f);
-            branchSplit.Add(BuildBranchesPane());
-
-            var logDetailsSplit = BuildTrackedSplit(LogDetailsSplitPref, 1, 420f);
+            var logDetailsSplit = BuildTrackedSplit(LogDetailsSplitPref, 1, 360f);
             logDetailsSplit.Add(BuildLogPane());
             commitDetailsRoot = new VisualElement();
-            commitDetailsRoot.style.flexGrow = 1;
-            commitDetailsRoot.style.minHeight = 0;
+            commitDetailsRoot.AddToClassList("ug-details-host");
             commitDetailsRoot.Add(BuildDetailsPane());
             logDetailsSplit.Add(commitDetailsRoot);
 
-            branchSplit.Add(logDetailsSplit);
-            workspace.Add(branchSplit);
-
+            if (EditorPrefs.GetBool(BranchesVisiblePref, true))
+            {
+                var branchSplit = BuildTrackedSplit(BranchLogSplitPref, 0, 210f);
+                branchSplit.Add(BuildBranchesPane());
+                branchSplit.Add(logDetailsSplit);
+                workspace.Add(branchSplit);
+            }
+            else workspace.Add(logDetailsSplit);
             return workspace;
-        }
-
-        private VisualElement BuildLogToolRail()
-        {
-            var rail = new VisualElement();
-            rail.AddToClassList("unitgit-toolrail");
-            rail.Add(BuildIconRailButton(UnitGitIconKind.CreateBranch, "Create new branch", PromptCreateBranch));
-            rail.Add(BuildIconRailButton(UnitGitIconKind.Update, "Update selected branch", UpdateSelectedBranch));
-            rail.Add(BuildIconRailButton(UnitGitIconKind.Delete, "Delete selected branch", DeleteSelectedBranch));
-            rail.Add(BuildIconRailButton(UnitGitIconKind.Fetch, "Fetch", Fetch));
-            rail.Add(BuildIconRailButton(UnitGitIconKind.GitHub, "Remote setup", OpenRemoteSetup));
-            return rail;
-        }
-
-        private Button BuildIconRailButton(UnitGitIconKind iconKind, string tooltip, Action action)
-        {
-            var button = new Button(() => action());
-            button.tooltip = tooltip;
-            button.AddToClassList("unitgit-rail-button");
-            var icon = new UnitGitIconElement(iconKind);
-            icon.AddToClassList("unitgit-rail-icon");
-            button.Add(icon);
-
-            return button;
         }
 
         private VisualElement BuildLogPane()
         {
             var pane = new VisualElement();
             pane.AddToClassList("unitgit-log-pane");
+            // Narrow: the hash goes, then the author's name (its initial stays), then the date; the subject keeps its room.
+            pane.RegisterCallback<GeometryChangedEvent>(evt =>
+            {
+                float width = evt.newRect.width;
+                pane.EnableInClassList("ug-log--narrow", width < 640f);
+                pane.EnableInClassList("ug-log--compact", width < 380f);
+            });
 
             var toolbar = new VisualElement();
-            toolbar.AddToClassList("unitgit-log-toolbar");
-
-            var search = new TextField();
-            search.value = logSearchDraft;
-            search.AddToClassList("unitgit-log-search");
-            search.RegisterValueChangedCallback(evt =>
+            toolbar.AddToClassList("ug-toolbar");
+            var branches = UnitGitUi.Icon(UnitGitIconKind.Branch, "Show or hide the branches", () =>
             {
-                logSearchDraft = evt.newValue;
-                QueueLogSearchRefresh();
+                EditorPrefs.SetBool(BranchesVisiblePref, !EditorPrefs.GetBool(BranchesVisiblePref, true));
+                RebuildContent();
             });
-            toolbar.Add(search);
-
-            int totalCommits = snapshot.Commits.Count;
-            int pageCount = Math.Max(1, (totalCommits + CommitPageSize - 1) / CommitPageSize);
-            logPage = Mathf.Clamp(logPage, 0, pageCount - 1);
-
-            toolbar.Add(BuildToolbarChip("Branch: " + Shorten(snapshot.CurrentBranch, 28)));
-            toolbar.Add(BuildToolbarChip(totalCommits + (snapshot.HasMoreCommits ? "+ commits" : " commits")));
-            if (pageCount > 1 || snapshot.HasMoreCommits)
+            branches.EnableInClassList("ug-icon-button--on", EditorPrefs.GetBool(BranchesVisiblePref, true));
+            toolbar.Add(branches);
+            var search = UnitGitUi.Search(logSearchDraft, "Text or hash", value =>
             {
-                toolbar.Add(BuildToolbarChip("Page " + (logPage + 1) + (snapshot.HasMoreCommits ? "" : "/" + pageCount)));
-                toolbar.Add(BuildActionButton("Prev", string.Empty, PreviousLogPage));
-                toolbar.Add(BuildActionButton("Next", string.Empty, NextLogPage));
+                logSearchDraft = value ?? string.Empty;
+                QueueLogSearchRefresh();
+            }, "ug-log-search");
+            toolbar.Add(search);
+            toolbar.Add(BuildFilterButton(UnitGitIconKind.Branch, "Branch", string.IsNullOrEmpty(logFilter.Branch) ? null : logFilter.Branch, ShowBranchFilterMenu));
+            toolbar.Add(BuildFilterButton(UnitGitIconKind.User, "User", string.IsNullOrEmpty(logFilter.Author) ? null : logFilter.Author, ShowUserFilterMenu));
+            toolbar.Add(BuildFilterButton(UnitGitIconKind.Calendar, "Date", logFilter.Since.HasValue ? SinceLabel(logFilter.Since.Value) : null, ShowDateFilterMenu));
+            if (!string.IsNullOrWhiteSpace(logFilter.Path))
+            {
+                var file = BuildFilterButton(UnitGitIconKind.Changes, "File", GetFileLeaf(logFilter.Path), ShowPathFilterMenu);
+                file.tooltip = "History of " + logFilter.Path;
+                toolbar.Add(file);
             }
-
-            toolbar.Add(BuildActionButton("Refresh", string.Empty, RefreshSnapshot));
-            toolbar.Add(BuildActionButton("Fetch", string.Empty, Fetch));
-            toolbar.Add(BuildActionButton("Pull", string.Empty, PullFastForward));
-
+            toolbar.Add(UnitGitUi.Spacer());
+            logCountLabel = UnitGitUi.Text(LogCountText(), "ug-log-count");
+            toolbar.Add(logCountLabel);
             pane.Add(toolbar);
 
+            BuildLogItems();
             var header = new VisualElement();
             header.AddToClassList("unitgit-log-header");
+            var graphSpace = new VisualElement();
+            graphSpace.AddToClassList("ug-log-graph-space");
+            graphSpace.style.width = graphWidth;
+            header.Add(graphSpace);
             header.Add(BuildHeaderLabel("Commit", "unitgit-log-header__commit"));
             header.Add(BuildHeaderLabel("Author", "unitgit-log-header__author"));
             header.Add(BuildHeaderLabel("Date", "unitgit-log-header__date"));
             header.Add(BuildHeaderLabel("Hash", "unitgit-log-header__hash"));
             pane.Add(header);
 
-            var scroll = new ScrollView();
+            if (logItems.Count == 0)
+            {
+                pane.Add(BuildLogEmptyState());
+                return pane;
+            }
+
+            logList = new ListView
+            {
+                itemsSource = logItems,
+                fixedItemHeight = LogRowHeight,
+                virtualizationMethod = CollectionVirtualizationMethod.FixedHeight,
+                selectionType = SelectionType.None,
+                makeItem = MakeLogRow,
+                bindItem = BindLogRow,
+            };
+            logList.AddToClassList("unitgit-log-list");
+            logList.focusable = true;
+            logList.style.flexGrow = 1;
+            logList.style.flexBasis = 0;
+            logList.style.minHeight = 0;
+            var scroll = logList.Q<ScrollView>();
             scroll.name = "unitgit-log-scroll";
-            scroll.AddToClassList("unitgit-log-scroll");
-            if (snapshot.Commits.Count == 0)
-            {
-                scroll.Add(BuildEmptyState("No commits found."));
-            }
-            else
-            {
-                int index = 0;
-                var visibleCommits = snapshot.Commits
-                    .Skip(logPage * CommitPageSize)
-                    .Take(CommitPageSize)
-                    .ToList();
-                foreach (UnitGitCommit commit in visibleCommits)
-                {
-                    UnitGitReleaseEntry release = GetReleaseForCommit(commit);
-                    if (release != null)
-                    {
-                        scroll.Add(BuildReleaseCheckpointRow(commit, release));
-                    }
-
-                    scroll.Add(BuildCommitRow(commit, index, visibleCommits.Count));
-                    index++;
-                }
-            }
-
-            pane.Add(scroll);
+            scroll.verticalScroller.valueChanged += value => LoadMoreHistoryIfNeeded(scroll, value);
+            logList.RegisterCallback<KeyDownEvent>(OnLogKeyDown);
+            pane.Add(logList);
             return pane;
         }
 
-        private void PreviousLogPage()
+        private VisualElement BuildLogEmptyState()
         {
-            if (logPage <= 0)
+            var empty = new VisualElement();
+            empty.AddToClassList("ug-empty");
+            bool filtered = !string.IsNullOrWhiteSpace(logSearch) || !logFilter.IsEmpty;
+            empty.Add(UnitGitUi.Text(filtered ? "No commit matches" : "No commits yet", "ug-empty__title"));
+            empty.Add(UnitGitUi.Text(filtered ? "Change the search or the filters." : "Commit your changes to start the history.", "ug-empty__text"));
+            if (filtered)
             {
+                var clear = UnitGitUi.Pill("Clear filters", ClearLogFilters, "ghost", UnitGitIconKind.Close);
+                clear.style.marginTop = 10;
+                empty.Add(clear);
+            }
+            return empty;
+        }
+
+        private string LogCountText()
+        {
+            if (snapshot == null) return string.Empty;
+            int count = snapshot.Commits.Count;
+            return count + (snapshot.HasMoreCommits ? "+" : string.Empty) + (count == 1 ? " commit" : " commits");
+        }
+
+        // Commits and their release rows, with the graph lanes.
+        private void BuildLogItems()
+        {
+            logItems.Clear();
+            if (snapshot == null) return;
+            var graph = UnitGitCommitGraph.Layout(snapshot.Commits, out int lanes);
+            graphWidth = UnitGitGraphCell.Inset * 2 + (Math.Min(lanes, 10) - 1) * UnitGitGraphCell.LaneWidth + 6f;
+            UnitGitCommitGraph.Row previous = null;
+            for (int i = 0; i < snapshot.Commits.Count; i++)
+            {
+                var commit = snapshot.Commits[i];
+                var release = GetReleaseForCommit(commit);
+                if (release != null)
+                    logItems.Add(new LogItem { Commit = commit, Release = release, Graph = previous != null ? UnitGitCommitGraph.PassThrough(previous) : new UnitGitCommitGraph.Row { Lane = -1 } });
+                logItems.Add(new LogItem { Commit = commit, Graph = graph[i] });
+                previous = graph[i];
+            }
+        }
+
+        // ---- Rows ----------------------------------------------------------------------------------------------------
+
+        private VisualElement MakeLogRow()
+        {
+            var row = new VisualElement { focusable = false };
+            row.AddToClassList("unitgit-log-row");
+            var graph = new UnitGitGraphCell();
+            row.Add(graph);
+
+            var subject = new VisualElement { name = "subject" };
+            subject.AddToClassList("unitgit-log-subject-wrap");
+            subject.Add(UnitGitUi.Text(string.Empty, "unitgit-log-subject"));
+            var refs = new VisualElement { name = "refs" };
+            refs.AddToClassList("ug-log-refs");
+            subject.Add(refs);
+            row.Add(subject);
+
+            var release = new VisualElement { name = "release" };
+            release.AddToClassList("ug-log-release");
+            var pill = new VisualElement();
+            pill.AddToClassList("ug-log-release__pill");
+            pill.Add(UnitGitUi.Text(string.Empty, "ug-log-release__name"));
+            pill.Add(UnitGitUi.Chip(string.Empty, "accent"));
+            pill.Add(UnitGitUi.Text(string.Empty, "ug-log-release__title"));
+            release.Add(pill);
+            row.Add(release);
+
+            var author = new VisualElement { name = "author" };
+            author.AddToClassList("unitgit-log-author");
+            author.Add(UnitGitUi.Text(string.Empty, "ug-avatar"));
+            author.Add(UnitGitUi.Text(string.Empty, "ug-log-author__name"));
+            row.Add(author);
+            row.Add(UnitGitUi.Text(string.Empty, "unitgit-log-date"));
+            row.Add(UnitGitUi.Text(string.Empty, "unitgit-log-hash"));
+
+            row.RegisterCallback<MouseDownEvent>(evt =>
+            {
+                if (!(row.userData is LogItem item)) return;
+                if (item.Release != null) HandleReleaseRowMouseDown(evt, item.Commit, item.Release);
+                else HandleCommitRowMouseDown(evt, item.Commit);
+            });
+            return row;
+        }
+
+        private void BindLogRow(VisualElement row, int index)
+        {
+            var item = logItems[index];
+            row.userData = item;
+            var commit = item.Commit;
+            bool isRelease = item.Release != null;
+            bool selected = isRelease
+                ? selectedCommit != null && selectedCommit.FullHash == commit.FullHash && string.Equals(selectedReleaseId, commit.ReleaseId, StringComparison.Ordinal)
+                : selectedCommitHashes.Contains(commit.FullHash) && string.IsNullOrEmpty(selectedReleaseId);
+            row.EnableInClassList("unitgit-log-row--selected", selected);
+            row.EnableInClassList("ug-log-row--release", isRelease);
+            row.EnableInClassList("ug-log-row--merge", !isRelease && commit.Parents != null && commit.Parents.Length > 1);
+
+            var graph = (UnitGitGraphCell)row[0];
+            graph.style.width = graphWidth;
+            graph.Bind(item.Graph, selected && !isRelease);
+
+            var subjectWrap = row.Q("subject");
+            var release = row.Q("release");
+            var author = row.Q("author");
+            var date = row.Q<Label>(className: "unitgit-log-date");
+            var hash = row.Q<Label>(className: "unitgit-log-hash");
+            subjectWrap.style.display = isRelease ? DisplayStyle.None : DisplayStyle.Flex;
+            release.style.display = isRelease ? DisplayStyle.Flex : DisplayStyle.None;
+            author.style.visibility = isRelease ? Visibility.Hidden : Visibility.Visible;
+            date.style.visibility = isRelease ? Visibility.Hidden : Visibility.Visible;
+            hash.style.visibility = isRelease ? Visibility.Hidden : Visibility.Visible;
+
+            if (isRelease)
+            {
+                var r = item.Release;
+                string name = !string.IsNullOrWhiteSpace(r.name) ? r.name : !string.IsNullOrWhiteSpace(r.tool) ? r.tool : "Release";
+                release.Q<Label>(className: "ug-log-release__name").text = Shorten(name, 32);
+                var version = release.Q<Label>(className: "ug-chip");
+                version.text = r.version ?? string.Empty;
+                version.style.display = string.IsNullOrWhiteSpace(r.version) ? DisplayStyle.None : DisplayStyle.Flex;
+                release.Q<Label>(className: "ug-log-release__title").text = Shorten(r.title ?? string.Empty, 60);
+                row.tooltip = "Release checkpoint" + (string.IsNullOrWhiteSpace(r.tool) ? string.Empty : " published by " + r.tool) + ". Click to see its details.";
                 return;
             }
 
-            logPage--;
-            RebuildContent();
+            subjectWrap.Q<Label>(className: "unitgit-log-subject").text = commit.Subject;
+            BindRefs(subjectWrap.Q("refs"), commit.Decorations);
+            var avatar = author.Q<Label>(className: "ug-avatar");
+            avatar.text = Initial(commit.AuthorName);
+            avatar.style.backgroundColor = AvatarColor(commit.AuthorEmail + commit.AuthorName);
+            author.Q<Label>(className: "ug-log-author__name").text = commit.AuthorName;
+            date.text = commit.RelativeDate;
+            date.tooltip = commit.Timestamp > 0 ? DateTimeOffset.FromUnixTimeSeconds(commit.Timestamp).LocalDateTime.ToString("f", CultureInfo.CurrentCulture) : null;
+            hash.text = commit.ShortHash;
+            row.tooltip = null;
         }
 
-        private void NextLogPage()
+        // Branch and tag labels, as chips: the checked-out branch first, then local, remote and tags.
+        private static void BindRefs(VisualElement refs, string decorations)
         {
-            int totalCommits = snapshot != null ? snapshot.Commits.Count : 0;
-            int pageCount = Math.Max(1, (totalCommits + CommitPageSize - 1) / CommitPageSize);
-            if (logPage >= pageCount - 1)
+            refs.Clear();
+            if (string.IsNullOrWhiteSpace(decorations)) return;
+            int shown = 0, hidden = 0;
+            foreach (string raw in decorations.Split(','))
             {
-                if (snapshot.HasMoreCommits && !refreshingSnapshot)
-                {
-                    historyLimit += CommitPageSize * 3;
-                    logPage++;
-                    RefreshSnapshot();
-                }
-                return;
+                string part = raw.Trim();
+                if (part.Length == 0 || part == "HEAD") continue;
+                string variant = "local", text = part;
+                if (part.StartsWith("HEAD -> ", StringComparison.Ordinal)) { variant = "head"; text = part.Substring(8); }
+                else if (part.StartsWith("tag: ", StringComparison.Ordinal)) { variant = "tag"; text = part.Substring(5); }
+                else if (part.Contains("/")) variant = "remote";
+                if (shown >= 3) { hidden++; continue; }
+                var chip = UnitGitUi.Chip(text.Length > 26 ? text.Substring(0, 24) + "…" : text, variant, part);
+                refs.Add(chip);
+                shown++;
             }
-
-            logPage++;
-            RebuildContent();
+            if (hidden > 0) refs.Add(UnitGitUi.Chip("+" + hidden));
         }
 
+        internal static string Initial(string name)
+        {
+            name = (name ?? string.Empty).Trim();
+            return name.Length == 0 ? "?" : char.ToUpperInvariant(name[0]).ToString();
+        }
+
+        internal static Color AvatarColor(string key)
+        {
+            int hash = 17;
+            foreach (char c in key ?? string.Empty) hash = hash * 31 + c;
+            return Color.HSVToRGB((hash & 0x7fffffff) % 360 / 360f, 0.45f, 0.62f);
+        }
+
+        // ---- Filters -------------------------------------------------------------------------------------------------
+
+        private Button BuildFilterButton(UnitGitIconKind icon, string title, string value, Action open)
+        {
+            var button = new Button { tooltip = "Filter by " + title.ToLowerInvariant() };
+            button.AddToClassList("ug-filter");
+            button.EnableInClassList("ug-filter--on", value != null);
+            button.Add(new UnitGitIconElement(icon));
+            button.Add(UnitGitUi.Text(value == null ? title : Shorten(value, 22), "ug-filter__label"));
+            var chevron = new UnitGitIconElement(UnitGitIconKind.ChevronExpanded);
+            chevron.AddToClassList("ug-filter__chevron");
+            button.Add(chevron);
+            UnitGitUi.Press(button, open);
+            return button;
+        }
+
+        private void ShowBranchFilterMenu()
+        {
+            var menu = new GenericMenu();
+            menu.AddItem(new GUIContent("All branches"), string.IsNullOrEmpty(logFilter.Branch), () => SetLogFilter(branch: string.Empty));
+            if (!string.IsNullOrWhiteSpace(snapshot?.CurrentBranch))
+                menu.AddItem(new GUIContent("Current (" + snapshot.CurrentBranch.Replace("/", "∕") + ")"), logFilter.Branch == snapshot.CurrentBranch,
+                    () => SetLogFilter(branch: snapshot.CurrentBranch));
+            menu.AddSeparator(string.Empty);
+            foreach (var branch in snapshot.Branches.OrderBy(b => b.IsRemote).ThenBy(b => b.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                var name = branch.Name;
+                menu.AddItem(new GUIContent((branch.IsRemote ? "Remote/" : "Local/") + name.Replace("/", "∕")), logFilter.Branch == name, () => SetLogFilter(branch: name));
+            }
+            menu.ShowAsContext();
+        }
+
+        private void ShowUserFilterMenu()
+        {
+            var menu = new GenericMenu();
+            menu.AddItem(new GUIContent("Anyone"), string.IsNullOrEmpty(logFilter.Author), () => SetLogFilter(author: string.Empty));
+            menu.AddSeparator(string.Empty);
+            foreach (string author in snapshot.Commits.Select(commit => commit.AuthorName).Where(a => !string.IsNullOrWhiteSpace(a))
+                         .GroupBy(a => a).OrderByDescending(g => g.Count()).Select(g => g.Key).Take(30))
+            {
+                string value = author;
+                menu.AddItem(new GUIContent(value.Replace("/", "∕")), logFilter.Author == value, () => SetLogFilter(author: value));
+            }
+            menu.ShowAsContext();
+        }
+
+        private void ShowDateFilterMenu()
+        {
+            var menu = new GenericMenu();
+            menu.AddItem(new GUIContent("Any time"), !logFilter.Since.HasValue, () => SetLogFilter(clearSince: true));
+            menu.AddSeparator(string.Empty);
+            foreach (var (label, days) in new[] { ("Last 24 hours", 1), ("Last 7 days", 7), ("Last 30 days", 30), ("Last year", 365) })
+            {
+                int span = days;
+                menu.AddItem(new GUIContent(label), logFilter.Since.HasValue && SinceLabel(logFilter.Since.Value) == label,
+                    () => SetLogFilter(since: DateTime.Now.Date.AddDays(1 - span)));
+            }
+            menu.ShowAsContext();
+        }
+
+        private void ShowPathFilterMenu()
+        {
+            var menu = new GenericMenu();
+            string path = logFilter.Path;
+            menu.AddItem(new GUIContent("Every file"), false, () => SetLogFilter(path: string.Empty));
+            menu.AddSeparator(string.Empty);
+            menu.AddItem(new GUIContent("Copy path"), false, () => EditorGUIUtility.systemCopyBuffer = path);
+            menu.ShowAsContext();
+        }
+
+        /// <summary>JetBrains' "Show History": the Log, for the commits that changed this file or folder.</summary>
+        private void ShowHistory(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+            logFilter.Path = path.Replace('\\', '/').TrimEnd('/');
+            selectedCommitHashes.Clear();
+            selectedCommit = null;
+            if (activeTab != UnitGitTab.Log) SetActiveTab(UnitGitTab.Log);
+            SetLogFilter();
+        }
+
+        private static string SinceLabel(DateTime since)
+        {
+            int days = (int)Math.Round((DateTime.Now.Date.AddDays(1) - since.Date).TotalDays);
+            return days <= 1 ? "Last 24 hours" : days <= 7 ? "Last 7 days" : days <= 30 ? "Last 30 days" : days <= 365 ? "Last year" : "Since " + since.ToShortDateString();
+        }
+
+        private void SetLogFilter(string branch = null, string author = null, DateTime? since = null, bool clearSince = false, string path = null)
+        {
+            if (branch != null) logFilter.Branch = branch;
+            if (author != null) logFilter.Author = author;
+            if (path != null) logFilter.Path = path;
+            if (since.HasValue) logFilter.Since = since;
+            if (clearSince) logFilter.Since = null;
+            historyLimit = CommitPageSize * 3;
+            RebuildContent();
+            RefreshSnapshot();
+        }
+
+        private void ClearLogFilters()
+        {
+            logFilter.Branch = string.Empty;
+            logFilter.Author = string.Empty;
+            logFilter.Since = null;
+            logFilter.Path = string.Empty;
+            logSearchDraft = logSearch = string.Empty;
+            historyLimit = CommitPageSize * 3;
+            RebuildContent();
+            RefreshSnapshot();
+        }
+
+        // Scrolling near the end loads older commits: no pages to click through.
+        private void LoadMoreHistoryIfNeeded(ScrollView scroll, float value)
+        {
+            if (value >= scroll.verticalScroller.highValue - LogRowHeight * 10) LoadMoreHistory();
+        }
+
+        private void LoadMoreHistory()
+        {
+            if (snapshot == null || !snapshot.HasMoreCommits || refreshingSnapshot || loadingMoreHistory) return;
+            loadingMoreHistory = true;
+            historyLimit += CommitPageSize * 3;
+            if (logCountLabel != null) logCountLabel.text = "Loading older commits…";
+            RefreshSnapshot();
+        }
+
+        // ---- Selection ------------------------------------------------------------------------------------------------
 
         private void SelectCommitFromRow(UnitGitCommit commit, bool selectRelease)
         {
@@ -186,7 +454,7 @@ namespace Orbiters.UnitGit.Editor
                 selectedCommitHashes.Clear();
                 selectionAnchorHash = string.Empty;
                 SetPrimarySelectedCommit(commit, commit.ReleaseId);
-                RebuildContent();
+                RefreshLogSelection();
                 return;
             }
 
@@ -207,7 +475,28 @@ namespace Orbiters.UnitGit.Editor
                 SetPrimarySelectedCommit(commit, string.Empty);
             }
 
-            RebuildContent();
+            RefreshLogSelection();
+        }
+
+        // The rows restyle at once; the details follow (they load in the background).
+        private void RefreshLogSelection()
+        {
+            if (logList == null || logList.panel == null)
+            {
+                RebuildContent();
+                return;
+            }
+            logList.RefreshItems();
+            RefreshDetailsPane();
+        }
+
+        private void RefreshDetailsPane()
+        {
+            if (commitDetailsRoot == null) return;
+            RememberScrollOffsets();
+            commitDetailsRoot.Clear();
+            commitDetailsRoot.Add(BuildDetailsPane());
+            RestoreScrollOffsets();
         }
 
         private void SetPrimarySelectedCommit(UnitGitCommit commit, string releaseId)
@@ -298,12 +587,13 @@ namespace Orbiters.UnitGit.Editor
             }
 
             evt.StopPropagation();
+            logList?.Focus();
             bool isContextClick = evt.button == 1;
             bool selectedByContext = isContextClick && selectedCommitHashes.Contains(commit.FullHash);
             if (selectedByContext)
             {
                 SetPrimarySelectedCommit(commit, string.Empty);
-                RebuildContent();
+                RefreshLogSelection();
             }
             else
             {
@@ -331,123 +621,39 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
-        private static VisualElement BuildSelectableRow(Action<MouseDownEvent> handleMouseDown, Action select)
+        private void OnLogKeyDown(KeyDownEvent evt)
         {
-            var row = new VisualElement
+            if (snapshot == null || snapshot.Commits.Count == 0) return;
+            if (evt.keyCode == KeyCode.C && (evt.ctrlKey || evt.commandKey) && selectedCommit != null)
             {
-                focusable = true,
-                pickingMode = PickingMode.Position
-            };
-
-            RegisterRowSelection(row, handleMouseDown, select);
-            return row;
+                CopyText("copy hash", selectedCommit.FullHash);
+                ShowToast("Copied " + selectedCommit.ShortHash);
+                evt.StopPropagation();
+                return;
+            }
+            if (evt.keyCode != KeyCode.UpArrow && evt.keyCode != KeyCode.DownArrow) return;
+            int index = selectedCommit != null ? snapshot.Commits.FindIndex(c => c.FullHash == selectedCommit.FullHash) : -1;
+            int next = Mathf.Clamp(index + (evt.keyCode == KeyCode.UpArrow ? -1 : 1), 0, snapshot.Commits.Count - 1);
+            if (next == index) return;
+            var commit = snapshot.Commits[next];
+            SelectCommitFromRow(commit, false, evt.shiftKey, false);
+            int row = logItems.FindIndex(item => item.Release == null && item.Commit == commit);
+            if (row >= 0) logList?.ScrollToItem(row);
+            evt.StopPropagation();
         }
 
-        // Selection listens to mouse-down so row feedback happens before any expensive details work.
-        private static void RegisterRowSelection(VisualElement row, Action<MouseDownEvent> handleMouseDown, Action select)
+        // After a refresh on the Log: rows, counts and branches change in place, the details only when the selection did.
+        private void RefreshLogInPlace()
         {
-            row.RegisterCallback<MouseDownEvent>(evt =>
-            {
-                if (evt.button == 0 || evt.button == 1)
-                {
-                    row.Focus();
-                    handleMouseDown(evt);
-                }
-            });
-
-            row.RegisterCallback<KeyDownEvent>(evt =>
-            {
-                if (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.Space)
-                {
-                    evt.StopPropagation();
-                    select();
-                }
-            });
+            string before = selectedCommit?.FullHash;
+            BuildLogItems();
+            loadingMoreHistory = false;
+            if (logCountLabel != null) logCountLabel.text = LogCountText();
+            logList.itemsSource = logItems;
+            logList.RefreshItems();
+            RefreshBranchesPane();
+            if (selectedCommit?.FullHash != before || selectedDetails == null) RefreshDetailsPane();
         }
 
-        private VisualElement BuildCommitRow(UnitGitCommit commit, int index, int totalCommits)
-        {
-            VisualElement row = BuildSelectableRow(evt => HandleCommitRowMouseDown(evt, commit), () => SelectCommitFromRow(commit, false));
-            row.AddToClassList("unitgit-log-row");
-            bool isSelected = selectedCommitHashes.Contains(commit.FullHash) && string.IsNullOrEmpty(selectedReleaseId);
-            if (isSelected)
-            {
-                row.AddToClassList("unitgit-log-row--selected");
-            }
-
-            var graphColor = GetGraphColor(commit);
-            var graph = BuildCommitGraphCell(graphColor, index == 0, index == totalCommits - 1, isSelected);
-            row.Add(graph);
-
-            var subjectWrap = new VisualElement();
-            subjectWrap.AddToClassList("unitgit-log-subject-wrap");
-
-            var subject = new Label(commit.Subject);
-            subject.AddToClassList("unitgit-log-subject");
-            subjectWrap.Add(subject);
-
-            if (!string.IsNullOrWhiteSpace(commit.Decorations))
-            {
-                var decorations = new Label(Shorten(commit.Decorations, 36));
-                decorations.AddToClassList("unitgit-log-decoration");
-                subjectWrap.Add(decorations);
-            }
-
-            row.Add(subjectWrap);
-
-            var author = new Label(commit.AuthorName);
-            author.AddToClassList("unitgit-log-author");
-            row.Add(author);
-
-            var date = new Label(commit.RelativeDate);
-            date.AddToClassList("unitgit-log-date");
-            row.Add(date);
-
-            var hash = new Label(commit.ShortHash);
-            hash.AddToClassList("unitgit-log-hash");
-            row.Add(hash);
-
-            return row;
-        }
-
-        private VisualElement BuildCommitGraphCell(Color graphColor, bool isNewestVisibleCommit, bool isOldestVisibleCommit, bool isSelectedCommit = false)
-        {
-            var graph = new VisualElement();
-            graph.AddToClassList("unitgit-graph-cell");
-
-            if (!isNewestVisibleCommit)
-            {
-                var topLine = new VisualElement();
-                topLine.AddToClassList("unitgit-graph-line");
-                topLine.AddToClassList("unitgit-graph-line--top");
-                topLine.style.backgroundColor = graphColor;
-                graph.Add(topLine);
-            }
-
-            if (!isOldestVisibleCommit)
-            {
-                var bottomLine = new VisualElement();
-                bottomLine.AddToClassList("unitgit-graph-line");
-                bottomLine.AddToClassList("unitgit-graph-line--bottom");
-                bottomLine.style.backgroundColor = graphColor;
-                graph.Add(bottomLine);
-            }
-
-            // The ring marks the currently selected commit, colored like its branch.
-            if (isSelectedCommit)
-            {
-                var ring = new VisualElement();
-                ring.AddToClassList("unitgit-graph-ring");
-                SetBorderColor(ring, graphColor);
-                graph.Add(ring);
-            }
-
-            var dot = new VisualElement();
-            dot.AddToClassList("unitgit-graph-dot");
-            dot.style.backgroundColor = graphColor;
-            graph.Add(dot);
-
-            return graph;
-        }
     }
 }

@@ -9,7 +9,6 @@ namespace Orbiters.UnitGit.Editor
 {
     internal sealed class UnitGitResetBranchPromptWindow : EditorWindow
     {
-        private readonly Dictionary<UnitGitResetMode, RadioButton> modeButtons = new Dictionary<UnitGitResetMode, RadioButton>();
         private Action<UnitGitResetMode> onSubmit;
         private UnitGitResetMode selectedMode = UnitGitResetMode.Mixed;
         private string branchName = string.Empty;
@@ -29,108 +28,57 @@ namespace Orbiters.UnitGit.Editor
             window.ShowUtility();
         }
 
+        private readonly Dictionary<UnitGitResetMode, VisualElement> modeCards = new Dictionary<UnitGitResetMode, VisualElement>();
+        private Button resetButton;
+
         private void CreateGUI()
         {
-            var root = rootVisualElement;
-            StyleSheet styleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>("Packages/orbiters.unitgit/Editor/Styles/unitgit.uss");
-            if (styleSheet != null)
-            {
-                root.styleSheets.Add(styleSheet);
-            }
+            var body = UnitGitDialog.Setup(this, "Reset \u2018" + GetBranchLabel() + "\u2019 to here", GetCommitLabel());
+            body.Add(BuildModeOption(UnitGitResetMode.Soft, "Soft", "Files stay as they are; the differences are included in the next commit."));
+            body.Add(BuildModeOption(UnitGitResetMode.Mixed, "Mixed", "Files stay as they are; the differences are left out of the next commit."));
+            body.Add(BuildModeOption(UnitGitResetMode.Keep, "Keep", "Files go back to this commit, but your local changes are kept."));
+            body.Add(BuildModeOption(UnitGitResetMode.Hard, "Hard", "Files go back to this commit. Local changes are lost.", danger: true));
 
-            root.AddToClassList("unitgit-reset-prompt");
-            root.Add(BuildTargetSummary());
-
-            var body = new Label("This will reset the current branch head to the selected commit,\nand update the working tree and the index according to the selected mode:");
-            body.AddToClassList("unitgit-reset-body");
-            root.Add(body);
-
-            root.Add(BuildModeOption(
-                UnitGitResetMode.Soft,
-                "Soft",
-                "Files won't change, differences will be staged for commit."));
-            root.Add(BuildModeOption(
-                UnitGitResetMode.Mixed,
-                "Mixed",
-                "Files won't change, differences won't be staged."));
-            root.Add(BuildModeOption(
-                UnitGitResetMode.Hard,
-                "Hard",
-                "Files will be reverted to the state of the selected commit.\nWarning: any local changes will be lost."));
-            root.Add(BuildModeOption(
-                UnitGitResetMode.Keep,
-                "Keep",
-                "Files will be reverted to the state of the selected commit,\nbut local changes will be kept intact."));
-
-            var spacer = new VisualElement();
-            spacer.AddToClassList("unitgit-reset-spacer");
-            root.Add(spacer);
-
-            var actions = new VisualElement();
-            actions.AddToClassList("unitgit-reset-actions");
-
-            var reset = new Button(() =>
+            var actions = UnitGitDialog.Actions(this);
+            actions.Add(UnitGitUi.Pill("Cancel", Close, "ghost"));
+            resetButton = UnitGitUi.Pill("Reset", () =>
             {
                 onSubmit?.Invoke(selectedMode);
                 Close();
-            })
-            {
-                text = "Reset"
-            };
-            reset.AddToClassList("unitgit-button");
-            reset.AddToClassList("unitgit-button--primary");
-            actions.Add(reset);
-
-            var cancel = new Button(Close)
-            {
-                text = "Cancel"
-            };
-            cancel.AddToClassList("unitgit-button");
-            actions.Add(cancel);
-
-            root.Add(actions);
+            }, "primary", UnitGitIconKind.Rollback);
+            actions.Add(resetButton);
             SelectMode(UnitGitResetMode.Mixed);
         }
 
-        private VisualElement BuildTargetSummary()
-        {
-            var label = new Label(GetBranchLabel() + " in " + GetRepositoryName() + " -> " + GetCommitLabel());
-            label.AddToClassList("unitgit-reset-target");
-            return label;
-        }
-
-        private VisualElement BuildModeOption(UnitGitResetMode mode, string title, string description)
+        private VisualElement BuildModeOption(UnitGitResetMode mode, string title, string description, bool danger = false)
         {
             var option = new VisualElement();
-            option.AddToClassList("unitgit-reset-option");
-
-            var button = new RadioButton(title);
-            button.value = selectedMode == mode;
-            button.AddToClassList("unitgit-reset-radio");
-            button.RegisterValueChangedCallback(evt =>
+            option.AddToClassList("ug-option");
+            if (danger) option.AddToClassList("ug-option--danger");
+            var dot = new VisualElement();
+            dot.AddToClassList("ug-option__dot");
+            option.Add(dot);
+            var texts = new VisualElement();
+            texts.AddToClassList("ug-option__texts");
+            texts.Add(UnitGitUi.Text(title, "ug-option__title"));
+            texts.Add(UnitGitUi.Text(description, "ug-option__text"));
+            option.Add(texts);
+            option.RegisterCallback<PointerDownEvent>(evt =>
             {
-                if (evt.newValue)
-                {
-                    SelectMode(mode);
-                }
+                if (evt.button == 0) SelectMode(mode);
             });
-            modeButtons[mode] = button;
-            option.Add(button);
-
-            var details = new Label(description);
-            details.AddToClassList("unitgit-reset-detail");
-            option.Add(details);
-
+            modeCards[mode] = option;
             return option;
         }
 
         private void SelectMode(UnitGitResetMode mode)
         {
             selectedMode = mode;
-            foreach (KeyValuePair<UnitGitResetMode, RadioButton> item in modeButtons)
-            {
-                item.Value.SetValueWithoutNotify(item.Key == selectedMode);
-            }
+            foreach (var item in modeCards) item.Value.EnableInClassList("ug-option--on", item.Key == mode);
+            if (resetButton == null) return;
+            resetButton.EnableInClassList("ug-button--primary", mode != UnitGitResetMode.Hard);
+            resetButton.EnableInClassList("ug-button--danger", mode == UnitGitResetMode.Hard);
+            UnitGitUi.SetText(resetButton, mode == UnitGitResetMode.Hard ? "Reset and discard" : "Reset");
         }
 
         private string GetBranchLabel()
@@ -156,7 +104,7 @@ namespace Orbiters.UnitGit.Editor
 
             string subject = string.IsNullOrWhiteSpace(commit.Subject) ? "(no subject)" : Shorten(commit.Subject.Trim(), 58);
             string author = string.IsNullOrWhiteSpace(commit.AuthorName) ? string.Empty : " by " + commit.AuthorName.Trim();
-            return commit.ShortHash + " \"" + subject + "\"" + author;
+            return commit.ShortHash + "  \u2022  " + subject + author;
         }
 
         private static string Shorten(string value, int maxLength)

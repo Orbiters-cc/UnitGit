@@ -22,7 +22,6 @@ namespace Orbiters.UnitGit.Editor
         private const string FoldPrefPrefix = "Orbiters.UnitGit.Fold.";
         private const string BranchLocalFoldPref = FoldPrefPrefix + "Branch.Local";
         private const string BranchRemoteFoldPref = FoldPrefPrefix + "Branch.Remote";
-        private const string ChangesFoldPref = FoldPrefPrefix + "Changes";
         private const double EditorEventRefreshDelaySeconds = 0.35d;
         private const double EditorEventRefreshCooldownSeconds = 1.25d;
         private const double LogSearchRefreshDelaySeconds = 0.25d;
@@ -63,7 +62,6 @@ namespace Orbiters.UnitGit.Editor
         private string branchSearch = string.Empty;
         private string logSearch = string.Empty;
         private string logSearchDraft = string.Empty;
-        private int logPage;
         private int historyLimit = CommitPageSize * 3;
         private string diffSearch = string.Empty;
         private int diffSearchMatchIndex;

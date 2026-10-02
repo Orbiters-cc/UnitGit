@@ -17,10 +17,14 @@ namespace Orbiters.UnitGit.Editor
         private sealed class ConflictWork
         {
             public string Path = string.Empty;
+            // Which sides have the file, as Git lists them: a side without it deleted it.
+            public bool HasMine, HasTheirs;
             public string Mine, Base, Theirs;
             public bool Binary;
             public UnityMergeResult Unity;
             public List<ConflictBlock> Blocks = new List<ConflictBlock>();
+            // The file on disk before anything was read: a save made from this read is refused once it changes.
+            public string FileState = string.Empty;
             public string Error;
         }
 
@@ -223,9 +227,12 @@ namespace Orbiters.UnitGit.Editor
             var body = new VisualElement();
             content.Add(body);
 
-            string key = path + "|" + File.GetLastWriteTimeUtc(Path.Combine(gitService.ProjectRoot, ".git", "index")).Ticks;
+            // These exact versions: the sides Git holds (its index) and the file on disk, which may be edited by hand meanwhile.
+            string key = path + "|" + IndexStamp(gitService.ProjectRoot) + "|" + DiskStamp(Path.Combine(gitService.ProjectRoot, path));
             if (!conflictWork.TryGetValue(key, out var task))
             {
+                // An older read of this file is never shown or saved again.
+                foreach (string old in conflictWork.Keys.Where(k => k.StartsWith(path + "|", StringComparison.Ordinal)).ToList()) conflictWork.Remove(old);
                 string root = gitService.ProjectRoot;
                 string tool = DiffYaml(path) ? UnitGitConflicts.UnityMergeTool() : null;
                 bool yaml = DiffYaml(path);
@@ -250,6 +257,19 @@ namespace Orbiters.UnitGit.Editor
 
         private static bool DiffYaml(string path) => IsUnityYamlPath(path);
 
+        // When Git last wrote its index, wherever this worktree keeps it.
+        private static string IndexStamp(string root)
+        {
+            string index = UnitGitPaths.GitPath(root, "index");
+            return index != null && File.Exists(index) ? File.GetLastWriteTimeUtc(index).Ticks.ToString() : "none";
+        }
+
+        private static string DiskStamp(string fullPath)
+        {
+            var file = new FileInfo(fullPath);
+            return file.Exists ? file.Length + ":" + file.LastWriteTimeUtc.Ticks : "missing";
+        }
+
         // Models and prefabs in 3D: each side coloured by what it changed since the common version.
         private VisualElement ModelSection(UnitGitStatusEntry entry)
         {
@@ -258,8 +278,7 @@ namespace Orbiters.UnitGit.Editor
             string root = gitService.ProjectRoot;
             string path = entry.Path;
             var view = new ModelCompareView("Mine", "Theirs");
-            string stamp = File.GetLastWriteTimeUtc(Path.Combine(root, ".git", "index")).Ticks.ToString();
-            view.Load("model|conflict|" + root + "|" + path + "|" + stamp, root, path,
+            view.Load("model|conflict|" + root + "|" + path + "|" + IndexStamp(root), root, path,
                 destination => new UnitGitService(root).WriteBlob(":2:" + path, destination),
                 destination => new UnitGitService(root).WriteBlob(":3:" + path, destination),
                 destination => new UnitGitService(root).WriteBlob(":1:" + path, destination));
@@ -273,19 +292,25 @@ namespace Orbiters.UnitGit.Editor
             try
             {
                 var git = new UnitGitService(root);
-                if (!IsTextFile(path))
+                work.FileState = UnitGitConflicts.FileState(Path.Combine(root, path));
+                // Which sides have the file comes from Git's list, never from a read that failed.
+                var stages = UnitGitConflicts.Stages(git, path);
+                if (stages.Count == 0)
                 {
-                    // Binary files are only kept whole: which sides have the file is all that matters here.
-                    work.Binary = true;
-                    work.Mine = StageExists(git, path, 2) ? string.Empty : null;
-                    work.Theirs = StageExists(git, path, 3) ? string.Empty : null;
+                    work.Error = "It is not in conflict any more. Refresh to see where it stands.";
                     return work;
                 }
+                work.HasMine = stages.Contains(2);
+                work.HasTheirs = stages.Contains(3);
+                // Binary files are only kept whole: which sides have the file is all that matters here.
+                work.Binary = !IsTextFile(path);
+                if (work.Binary || !work.HasMine || !work.HasTheirs) return work;
                 work.Mine = UnitGitConflicts.Stage(git, path, 2);
-                work.Base = UnitGitConflicts.Stage(git, path, 1);
                 work.Theirs = UnitGitConflicts.Stage(git, path, 3);
-                work.Binary = UnitGitConflicts.IsBinary(work.Mine) || UnitGitConflicts.IsBinary(work.Theirs) || !IsTextFile(path);
-                if (work.Binary || work.Mine == null || work.Theirs == null) return work;
+                if (stages.Contains(1)) work.Base = UnitGitConflicts.Stage(git, path, 1);
+                // A side that turns out binary has no text, and is kept whole too.
+                work.Binary = work.Mine == null || work.Theirs == null;
+                if (work.Binary) return work;
                 if (yaml) work.Unity = UnitGitConflicts.UnityMerge(tool, work.Mine, work.Base, work.Theirs, Path.GetExtension(path));
                 work.Blocks = UnitGitConflicts.Blocks(git, work.Mine, work.Base ?? string.Empty, work.Theirs);
             }
@@ -294,11 +319,6 @@ namespace Orbiters.UnitGit.Editor
                 work.Error = ex.Message;
             }
             return work;
-        }
-
-        private static bool StageExists(UnitGitService git, string path, int stage)
-        {
-            return git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "cat-file", "-e", ":" + stage + ":" + path).Success;
         }
 
         private static bool IsTextFile(string path)
@@ -316,13 +336,21 @@ namespace Orbiters.UnitGit.Editor
         {
             var work = task.IsFaulted ? new ConflictWork { Error = task.Exception?.GetBaseException().Message } : task.Result;
             if (!string.IsNullOrEmpty(work.Error)) { body.Add(ConflictCard("Could not read this conflict", work.Error, "ugc-card--warning")); return; }
-            if (work.Mine == null || work.Theirs == null)
+            if (!work.HasMine || !work.HasTheirs)
             {
-                bool youDeleted = work.Mine == null;
-                body.Add(ConflictCard(youDeleted ? "You deleted this file; they changed it" : "They deleted this file; you changed it",
-                    "Keep the file with its changes, or delete it.", "ugc-card--info"));
+                bool youDeleted = !work.HasMine;
                 var row = new VisualElement();
                 row.AddToClassList("ugc-choices--wide");
+                if (!work.HasMine && !work.HasTheirs)
+                {
+                    // Nothing is left to keep: deleting is the only way to resolve it.
+                    body.Add(ConflictCard("Both sides deleted this file", "Delete it to mark it resolved.", "ugc-card--info"));
+                    row.Add(ConflictButton("Delete it", "ugc-button ugc-button--primary", "Remove the file.", () => TakeWholeSide(entry.Path, true)));
+                    body.Add(row);
+                    return;
+                }
+                body.Add(ConflictCard(youDeleted ? "You deleted this file; they changed it" : "They deleted this file; you changed it",
+                    "Keep the file with its changes, or delete it.", "ugc-card--info"));
                 row.Add(ConflictButton("Keep the file", "ugc-button ugc-button--primary", "Keep the changed version.", () => TakeWholeSide(entry.Path, youDeleted ? false : true)));
                 row.Add(ConflictButton("Delete it", "ugc-button", "Remove the file.", () => TakeWholeSide(entry.Path, youDeleted)));
                 body.Add(row);
@@ -336,18 +364,18 @@ namespace Orbiters.UnitGit.Editor
                         : "Images and other binary files change as a whole. Keep one side with the buttons above.", "ugc-card--info"));
                 return;
             }
-            if (work.Unity != null) body.Add(UnityMergeCard(entry.Path, work.Unity));
+            if (work.Unity != null) body.Add(UnityMergeCard(entry.Path, work.Unity, work.FileState));
             AddParts(body, entry.Path, work);
         }
 
-        private VisualElement UnityMergeCard(string path, UnityMergeResult unity)
+        private VisualElement UnityMergeCard(string path, UnityMergeResult unity, string fileState)
         {
             if (!unity.Available) return ConflictCard("Unity's merge is not available", unity.Message, "ugc-card--info");
             if (unity.Clean)
             {
                 var card = ConflictCard("Unity merged both sides", "It combined the changes object by object: nothing conflicts. Use its result, or choose parts yourself below.", "ugc-card--good");
                 var use = ConflictButton("Use Unity's merge", "ugc-button ugc-button--primary", "Save Unity's result and mark the file resolved.", () =>
-                    RunAction("Resolve " + GetFileLeaf(path), () => UnitGitConflicts.Resolve(gitService, path, unity.Output), result => AfterResolved(path, result)));
+                    RunAction("Resolve " + GetFileLeaf(path), () => UnitGitConflicts.Resolve(gitService, path, unity.Output, fileState), result => AfterResolved(path, result)));
                 use.AddToClassList("ugc-card__action");
                 card.Add(use);
                 return card;
@@ -382,7 +410,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 var card = ConflictCard("Git found no conflicting lines", "The sides can be combined as they are. Save to mark the file resolved.", "ugc-card--good");
                 card.Add(ConflictButton("Save and mark resolved", "ugc-button ugc-button--primary ugc-card__action", "Save the combined file.", () =>
-                    RunAction("Resolve " + GetFileLeaf(path), () => UnitGitConflicts.Resolve(gitService, path, UnitGitConflicts.Compose(work.Blocks)), result => AfterResolved(path, result))));
+                    RunAction("Resolve " + GetFileLeaf(path), () => UnitGitConflicts.Resolve(gitService, path, UnitGitConflicts.Compose(work.Blocks), work.FileState), result => AfterResolved(path, result))));
                 body.Add(card);
                 return;
             }
@@ -422,7 +450,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 string text = UnitGitConflicts.Compose(work.Blocks);
                 if (text == null) return;
-                RunAction("Resolve " + GetFileLeaf(path), () => UnitGitConflicts.Resolve(gitService, path, text), result => AfterResolved(path, result));
+                RunAction("Resolve " + GetFileLeaf(path), () => UnitGitConflicts.Resolve(gitService, path, text, work.FileState), result => AfterResolved(path, result));
             });
             footer.Add(save);
             body.Add(footer);

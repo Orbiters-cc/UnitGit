@@ -38,14 +38,22 @@ namespace Orbiters.UnitGit.Editor
             complete?.Invoke(result);
         }
 
-        private void RunAction(string label, Func<GitCommandResult> action, Action<GitCommandResult> onComplete = null)
+        // What the top bar says while an action runs, e.g. "Pushing…".
+        private string busyLabel;
+        // The notification a successful action shows, if any.
+        private string busySuccess;
+
+        private void RunAction(string label, Func<GitCommandResult> action, Action<GitCommandResult> onComplete = null, string working = null, string success = null)
         {
-            if (busy)
+            // A commit waiting for its files goes first: nothing may change the repository under it.
+            if (busy || commitWhenIncluded != null)
             {
                 return;
             }
 
             busy = true;
+            busyLabel = working ?? char.ToUpperInvariant(label[0]) + label.Substring(1) + "…";
+            busySuccess = success;
             AppendConsole(label, "started");
             RefreshTopBar();
             EnsureEditorUpdatePump();
@@ -89,6 +97,9 @@ namespace Orbiters.UnitGit.Editor
             }
 
             busy = false;
+            string success = busySuccess;
+            busyLabel = null;
+            busySuccess = null;
             GitCommandResult result = task.Status == TaskStatus.RanToCompletion
                 ? task.Result
                 : new GitCommandResult
@@ -100,9 +111,14 @@ namespace Orbiters.UnitGit.Editor
             if (result == null || !result.Success)
             {
                 string message = result != null && !string.IsNullOrWhiteSpace(result.Message)
-                    ? result.Message
+                    ? UnitGitRedaction.Redact(result.Message.Trim())
                     : "The command failed.";
-                EditorUtility.DisplayDialog("Unit Git", message, "OK");
+                if (message.Length > 260) message = message.Substring(0, 257) + "…";
+                ShowToast(message, error: true, "Console", () => SetActiveTab(UnitGitTab.Console));
+            }
+            else if (!string.IsNullOrEmpty(success))
+            {
+                ShowToast(success);
             }
 
             try

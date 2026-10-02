@@ -77,10 +77,10 @@ namespace Orbiters.UnitGit.Editor.Semantic
         // The temporary folder never shows up as a change: it is listed in the repository's local exclude file.
         private static void ExcludeFromGit(string projectRoot)
         {
-            string info = System.IO.Path.Combine(projectRoot, ".git", "info");
-            if (!Directory.Exists(System.IO.Path.Combine(projectRoot, ".git"))) return;
-            Directory.CreateDirectory(info);
-            string exclude = System.IO.Path.Combine(info, "exclude");
+            // Git says where the exclude file is: in a linked worktree it is in the main repository's folder.
+            string exclude = UnitGitPaths.GitPath(projectRoot, "info/exclude");
+            if (exclude == null) return;
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(exclude));
             string existing = File.Exists(exclude) ? File.ReadAllText(exclude) : string.Empty;
             if (existing.Contains("/" + Folder + "/")) return;
             File.AppendAllText(exclude, (existing.Length > 0 && !existing.EndsWith("\n", StringComparison.Ordinal) ? "\n" : string.Empty) +

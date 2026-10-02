@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -12,17 +13,11 @@ namespace Orbiters.UnitGit.Editor
         private readonly UnitGitLatestRequest<UnitGitDiff> diffRead = new UnitGitLatestRequest<UnitGitDiff>();
         private UnitGitDiff loadedDiff;
         private string requestedDiffPath;
-        private ListView diffList;
-        private readonly List<int> diffMatches = new List<int>();
-        private readonly HashSet<int> diffMatchRows = new HashSet<int>();
-        private string indexedDiffSearch;
-        private UnitGitDiff indexedDiff;
+        private UnitGitDiffViewer diffViewer;
         private Label diffCountLabel;
-        private Label diffLeftTitle;
-        private Label diffRightTitle;
+        // A newly selected file opens at its first change; a refresh of the same file keeps the scroll.
+        private string jumpedToFirstChange;
         private Font diffFont;
-        private float diffCharacterWidth;
-        private float diffColumnWidth;
         private const string DiffModePref = "Orbiters.UnitGit.Diff.Mode";
 
         internal enum DiffMode { Scene, Model, Text }
@@ -133,9 +128,10 @@ namespace Orbiters.UnitGit.Editor
         {
             string root = gitService.ProjectRoot;
             var file = new FileInfo(Path.Combine(root, change.Path));
-            string head = Path.Combine(root, ".git", "logs", "HEAD");
+            // Where Git keeps HEAD's log (elsewhere in a linked worktree): it changes with every commit and checkout.
+            string head = UnitGitPaths.GitPath(root, "logs/HEAD");
             return kind + "|local|" + root + "|" + change.Path + "|" + (file.Exists ? file.LastWriteTimeUtc.Ticks + ":" + file.Length : "deleted") +
-                "|" + (File.Exists(head) ? File.GetLastWriteTimeUtc(head).Ticks : 0);
+                "|" + (head != null && File.Exists(head) ? File.GetLastWriteTimeUtc(head).Ticks : 0);
         }
 
         private VisualElement BuildLocalSceneView(UnitGitStatusEntry change)
@@ -167,134 +163,202 @@ namespace Orbiters.UnitGit.Editor
                 loadedDiff = null;
                 RequestLocalDiff(change);
             }
-            var toolbar = new VisualElement();
-            toolbar.AddToClassList("unitgit-diff-toolbar");
-            var modes = change != null ? ModesFor(path) : new List<DiffMode> { DiffMode.Text };
-            var mode = change != null ? ModeFor(path) : DiffMode.Text;
-            if (modes.Count > 1)
+            diffViewer = null;
+            diffCountLabel = null;
+            if (change == null)
             {
-                toolbar.Add(BuildModeSwitch(modes, mode, value =>
-                {
-                    RememberMode(path, value);
-                    RebuildLocalDiffPane();
-                }));
+                pane.Add(BuildDiffPlaceholder("Select a file to see its changes"));
+                return pane;
             }
-            toolbar.Add(BuildDiffToolButton(UnitGitIconKind.PreviousDifference, "Previous search match", PreviousDiffSearchMatch));
-            toolbar.Add(BuildDiffToolButton(UnitGitIconKind.NextDifference, "Next search match", NextDiffSearchMatch));
-            toolbar.Add(BuildDiffToolButton(UnitGitIconKind.Search, "Focus diff search", () => diffSearchField?.Focus()));
-            diffSearchField = new TextField { value = diffSearch, tooltip = "Search in diff" };
-            diffSearchField.AddToClassList("unitgit-diff-search");
-            var searchField = diffSearchField;
-            IVisualElementScheduledItem searchJob = null;
-            diffSearchField.RegisterValueChangedCallback(evt =>
-            {
-                diffSearch = evt.newValue;
-                diffSearchMatchIndex = 0;
-                searchJob?.Pause();
-                searchJob = searchField.schedule.Execute(() => UpdateDiffSearch(true)).StartingIn(150);
-            });
-            toolbar.Add(diffSearchField);
-            var spacer = new VisualElement();
-            spacer.AddToClassList("unitgit-spacer");
-            toolbar.Add(spacer);
-            diffCountLabel = BuildToolbarChip(loadedDiff == null ? "Loading..." : loadedDiff.DifferenceCount + " differences");
-            toolbar.Add(diffCountLabel);
-            pane.Add(toolbar);
-            var pathRow = new VisualElement();
-            pathRow.AddToClassList("unitgit-diff-path-row");
-            pathRow.Add(new Label(change != null ? path : "No file selected"));
-            pane.Add(pathRow);
-            diffList = null;
-            diffLeftTitle = null;
-            diffRightTitle = null;
+
+            var modes = ModesFor(path);
+            var mode = ModeFor(path);
+            pane.Add(BuildDiffToolbar(change, modes, mode));
             if (mode != DiffMode.Text)
             {
-                // The text search tools belong to the Text view.
-                foreach (var tool in toolbar.Query(className: "unitgit-diff-tool-button").ToList()) tool.style.display = DisplayStyle.None;
-                diffSearchField.style.display = DisplayStyle.None;
                 pane.Add(mode == DiffMode.Scene ? BuildLocalSceneView(change) : BuildLocalModelView(change));
                 return pane;
             }
             if (loadedDiff == null)
             {
-                pane.Add(BuildEmptyState("Loading diff..."));
+                pane.Add(BuildDiffPlaceholder("Loading the diff…", spinner: true));
                 return pane;
             }
-            var header = new VisualElement();
-            header.AddToClassList("unitgit-diff-header");
-            diffLeftTitle = new Label(loadedDiff.LeftTitle);
-            diffRightTitle = new Label(loadedDiff.RightTitle);
-            foreach (var label in new[] { diffLeftTitle, diffRightTitle })
-            {
-                label.AddToClassList("unitgit-diff-header-cell");
-                header.Add(label);
-            }
-            pane.Add(header);
-            UpdateDiffSearch(false);
-            if (diffFont == null)
-            {
-                diffFont = Font.CreateDynamicFontFromOSFont(new[] { "Consolas", "Menlo", "DejaVu Sans Mono" }, 12);
-                diffCharacterWidth = new GUIStyle { font = diffFont, fontSize = 12 }.CalcSize(new GUIContent("M")).x;
-                diffCharacterWidth = Mathf.Max(1, diffCharacterWidth);
-            }
-            diffColumnWidth = Mathf.Max(420, loadedDiff.MaxLineLength * diffCharacterWidth + 24);
-            // Recycle the labels too: layout and rendering are bounded by the viewport.
-            diffList = new ListView
-            {
-                itemsSource = loadedDiff.Lines,
-                fixedItemHeight = 20,
-                virtualizationMethod = CollectionVirtualizationMethod.FixedHeight,
-                selectionType = SelectionType.None,
-                horizontalScrollingEnabled = true,
-                makeItem = () =>
-                {
-                    var row = new VisualElement();
-                    row.AddToClassList("unitgit-diff-line");
-                    for (int i = 0; i < 2; i++)
-                    {
-                        var cell = new VisualElement();
-                        cell.AddToClassList("unitgit-diff-cell");
-                        var label = new Label();
-                        label.style.position = Position.Absolute;
-                        label.style.unityFont = diffFont;
-                        label.style.fontSize = 12;
-                        label.style.whiteSpace = WhiteSpace.NoWrap;
-                        cell.Add(label);
-                        row.Add(cell);
-                    }
-                    row.AddManipulator(new ContextualMenuManipulator(evt =>
-                    {
-                        var line = row.userData as UnitGitDiffLine;
-                        if (line == null)
-                            return;
-                        evt.menu.AppendAction("Copy left line", _ => EditorGUIUtility.systemCopyBuffer = line.Left);
-                        evt.menu.AppendAction("Copy right line", _ => EditorGUIUtility.systemCopyBuffer = line.Right);
-                    }));
-                    return row;
-                },
-                bindItem = (row, index) =>
-                {
-                    var line = loadedDiff.Lines[index];
-                    row.userData = line;
-                    row.style.minWidth = diffColumnWidth * 2;
-                    row.ClearClassList();
-                    row.AddToClassList("unitgit-diff-line");
-                    row.AddToClassList("unitgit-diff-line--" + line.Kind.ToString().ToLowerInvariant());
-                    row.EnableInClassList("unitgit-diff-line--search-match", diffMatchRows.Contains(index));
-                    row.EnableInClassList("unitgit-diff-line--search-current", diffMatches.Count > 0 && diffMatches[diffSearchMatchIndex] == index);
-                    BindDiffCell(row[0], line.Left, 0);
-                    BindDiffCell(row[1], line.Right, diffColumnWidth);
-                }
-            };
-            diffList.style.flexGrow = 1;
-            diffList.style.flexBasis = 0;
-            diffList.style.minHeight = 0;
-            var diffScroll = diffList.Q<ScrollView>();
-            diffScroll.name = "unitgit-diff-scroll";
-            diffScroll.horizontalScroller.valueChanged += _ => diffList?.RefreshItems();
-            diffScroll.contentViewport.RegisterCallback<GeometryChangedEvent>(_ => diffList?.RefreshItems());
-            pane.Add(diffList);
+            diffViewer = new UnitGitDiffViewer { CanRevert = true };
+            diffViewer.RevertRequested += block => RevertLocalBlock(change.Path, block);
+            diffViewer.SetDiff(loadedDiff);
+            diffViewer.Search(diffSearch, false);
+            JumpToFirstChange(path);
+            diffViewer.List.focusable = true;
+            diffViewer.List.RegisterCallback<KeyDownEvent>(OnDiffKeyDown);
+            pane.Add(diffViewer);
+            UpdateDiffCount();
             return pane;
+        }
+
+        private VisualElement BuildDiffToolbar(UnitGitStatusEntry change, IList<DiffMode> modes, DiffMode mode)
+        {
+            var toolbar = new VisualElement();
+            toolbar.AddToClassList("ug-toolbar");
+            toolbar.AddToClassList("unitgit-diff-toolbar");
+            toolbar.Add(BuildProjectFileIcon(change.Path, "ug-diff-file__icon"));
+            var name = UnitGitUi.Text(GetFileLeaf(change.Path), "ug-diff-file__name");
+            name.AddToClassList("ug-status--" + StatusKey(change));
+            toolbar.Add(name);
+            toolbar.Add(UnitGitUi.Text(GetDirectoryLabel(change.Path), "ug-diff-file__path"));
+            toolbar.Add(UnitGitUi.Spacer());
+            if (modes.Count > 1)
+            {
+                toolbar.Add(BuildModeSwitch(modes, mode, value =>
+                {
+                    RememberMode(change.Path, value);
+                    RebuildLocalDiffPane();
+                }));
+            }
+            if (mode == DiffMode.Text)
+            {
+                toolbar.Add(UnitGitDiffViewer.BuildViewOptions(() => diffViewer, ReloadLocalDiff));
+                toolbar.Add(UnitGitUi.Separator());
+                toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.PreviousDifference, "Previous change (Shift+F7) or search match", () => StepDiff(-1)));
+                toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.NextDifference, "Next change (F7) or search match; after the last one, the next file", () => StepDiff(1)));
+                var search = UnitGitUi.Search(diffSearch, "Search", value =>
+                {
+                    diffSearch = value ?? string.Empty;
+                    diffSearchMatchIndex = 0;
+                    UpdateDiffSearch(true);
+                }, "ug-diff-search");
+                diffSearchField = search;
+                toolbar.Add(search);
+                diffCountLabel = UnitGitUi.Chip(loadedDiff == null ? "…" : string.Empty, null);
+                diffCountLabel.AddToClassList("ug-diff-count");
+                toolbar.Add(diffCountLabel);
+            }
+            return toolbar;
+        }
+
+        private VisualElement BuildDiffPlaceholder(string text, bool spinner = false)
+        {
+            var placeholder = new VisualElement();
+            placeholder.AddToClassList("ug-diff-placeholder");
+            if (spinner) placeholder.Add(UnitGitUi.Spinner());
+            else
+            {
+                var icon = new UnitGitIconElement(UnitGitIconKind.Diff);
+                icon.AddToClassList("ug-diff-placeholder__icon");
+                placeholder.Add(icon);
+            }
+            placeholder.Add(UnitGitUi.Text(text, "ug-diff-placeholder__text"));
+            return placeholder;
+        }
+
+        private void JumpToFirstChange(string path)
+        {
+            if (diffViewer == null || loadedDiff == null || loadedDiff.Lines.Count == 0 || jumpedToFirstChange == path) return;
+            jumpedToFirstChange = path;
+            var viewer = diffViewer;
+            viewer.schedule.Execute(() =>
+            {
+                viewer.MoveChange(1);
+                UpdateDiffCount();
+            }).StartingIn(30);
+        }
+
+        private void UpdateDiffCount()
+        {
+            if (diffCountLabel == null) return;
+            if (diffViewer == null) { diffCountLabel.text = "…"; return; }
+            if (!string.IsNullOrWhiteSpace(diffSearch))
+                diffCountLabel.text = diffViewer.MatchCount == 0 ? "No match" : diffViewer.MatchIndex + 1 + " of " + diffViewer.MatchCount;
+            else
+                diffCountLabel.text = diffViewer.DifferenceCount == 0 ? "No change"
+                    : diffViewer.CurrentChange >= 0 ? diffViewer.CurrentChange + 1 + " of " + diffViewer.DifferenceCount + (diffViewer.DifferenceCount == 1 ? " change" : " changes")
+                    : diffViewer.DifferenceCount + (diffViewer.DifferenceCount == 1 ? " change" : " changes");
+        }
+
+        // Arrows: the search matches while searching, the changes otherwise; past the last change, the next file (as F7 does
+        // in JetBrains IDEs).
+        private void StepDiff(int step)
+        {
+            if (diffViewer == null) return;
+            if (!string.IsNullOrWhiteSpace(diffSearch)) MoveDiffSearchMatch(step);
+            else if (!diffViewer.MoveChange(step) && !SelectAdjacentChange(step))
+                ShowToast(step > 0 ? "That was the last change" : "That was the first change");
+            UpdateDiffCount();
+        }
+
+        // The whitespace option changed: the same file is read again and opens at its first change.
+        private void ReloadLocalDiff()
+        {
+            jumpedToFirstChange = null;
+            requestedDiffPath = null;
+            RequestLocalDiff(GetSelectedChange());
+        }
+
+        // "»": the change goes back to the left side's lines in the file on disk; the notification can undo it.
+        private void RevertLocalBlock(string path, UnitGitDiffBlock block)
+        {
+            if (string.IsNullOrEmpty(path) || block == null || diffViewer == null) return;
+            string full = Path.Combine(gitService.ProjectRoot, path);
+            GitCommandResult result;
+            byte[] before = null, after = null;
+            try
+            {
+                result = UnitGitBlockRevert.Apply(full, block.RightStart, block.Right, block.Left, diffViewer.Diff.LeftEndsWithoutNewline, out before, out after);
+            }
+            catch (Exception ex)
+            {
+                result = new GitCommandResult { ExitCode = 1, StandardError = ex.Message };
+            }
+            if (!result.Success)
+            {
+                ShowToast(result.Message, error: true);
+                ReloadLocalDiff();
+                return;
+            }
+            AppendConsole("revert change", path + ": lines " + block.RightStart + "-" + (block.RightStart + Math.Max(1, block.Right.Count) - 1) +
+                                           " put back as the left side has them");
+            ImportIfProjectAsset(path);
+            ShowToast("Reverted a change in ‘" + GetFileLeaf(path) + "’", false, "Undo", () =>
+            {
+                var undone = UnitGitBlockRevert.Undo(full, before, after);
+                if (!undone.Success)
+                {
+                    ShowToast(undone.Message, error: true);
+                    return;
+                }
+                AppendConsole("revert change", path + ": undone");
+                ImportIfProjectAsset(path);
+                RefreshAfterLocalEdit();
+            });
+            RefreshAfterLocalEdit();
+        }
+
+        private void RefreshAfterLocalEdit()
+        {
+            var change = GetSelectedChange();
+            if (change != null) RequestLocalDiff(change);
+            RefreshSnapshot();
+        }
+
+        // Unity notices the edit at once (a script recompiles, an asset reimports) instead of on the next focus.
+        private static void ImportIfProjectAsset(string path)
+        {
+            if (path.StartsWith("Assets/", StringComparison.Ordinal) || path.StartsWith("Packages/", StringComparison.Ordinal))
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+        }
+
+        private void OnDiffKeyDown(KeyDownEvent evt)
+        {
+            if (evt.keyCode == KeyCode.F7)
+            {
+                StepDiff(evt.shiftKey ? -1 : 1);
+                evt.StopPropagation();
+            }
+            else if (evt.keyCode == KeyCode.F && (evt.ctrlKey || evt.commandKey))
+            {
+                diffSearchField?.Focus();
+                evt.StopPropagation();
+            }
         }
 
         private void RequestLocalDiff(UnitGitStatusEntry change)
@@ -306,20 +370,38 @@ namespace Orbiters.UnitGit.Editor
                 loadedDiff = null;
             var previous = loadedDiff;
             string root = gitService.ProjectRoot;
+            var whitespace = UnitGitDiffViewer.Whitespace;
             diffRead.Request(stale =>
             {
-                var next = new UnitGitService(root) { ReadSuperseded = stale }.GetFileDiff(change);
-                foreach (var line in next.Lines)
-                {
-                    line.Left = (line.Left ?? string.Empty).Replace("\t", "    ");
-                    line.Right = (line.Right ?? string.Empty).Replace("\t", "    ");
-                    next.MaxLineLength = Math.Max(next.MaxLineLength, Math.Max(line.Left.Length, line.Right.Length));
-                }
+                var next = new UnitGitService(root) { ReadSuperseded = stale }.GetFileDiff(change, whitespace);
+                PrepareDiff(next);
                 if (previous != null && SameDiff(previous, next))
                     return previous;
                 return next;
             });
             EnsureEditorUpdatePump();
+        }
+
+        // Tabs show as four spaces; the exact text stays for copying and for putting a change back.
+        internal static void PrepareDiff(UnitGitDiff diff)
+        {
+            foreach (var line in diff.Lines)
+            {
+                string left = line.Left ?? string.Empty, right = line.Right ?? string.Empty;
+                if (left.IndexOf('\t') >= 0)
+                {
+                    line.RawLeft = left;
+                    left = left.Replace("\t", "    ");
+                }
+                if (right.IndexOf('\t') >= 0)
+                {
+                    line.RawRight = right;
+                    right = right.Replace("\t", "    ");
+                }
+                line.Left = left;
+                line.Right = right;
+                diff.MaxLineLength = Math.Max(diff.MaxLineLength, Math.Max(left.Length, right.Length));
+            }
         }
 
         internal static bool SameDiff(UnitGitDiff a, UnitGitDiff b)
@@ -342,27 +424,18 @@ namespace Orbiters.UnitGit.Editor
             loadedDiff = diff ?? new UnitGitDiff();
             if (error != null)
                 loadedDiff.Lines.Add(new UnitGitDiffLine { Right = "Could not load diff: " + error.Message });
-            indexedDiff = null;
-            if (diffLeftTitle != null)
-                diffLeftTitle.text = loadedDiff.LeftTitle;
-            if (diffRightTitle != null)
-                diffRightTitle.text = loadedDiff.RightTitle;
+            if (diffViewer != null)
+            {
+                diffViewer.SetDiff(loadedDiff);
+                JumpToFirstChange(loadedDiff.Path);
+                UpdateDiffCount();
+                return;
+            }
             if (activeTab == UnitGitTab.LocalChanges)
             {
-                if (diffList != null && diffList.panel != null)
-                {
-                    diffColumnWidth = Mathf.Max(420, loadedDiff.MaxLineLength * diffCharacterWidth + 24);
-                    diffList.itemsSource = loadedDiff.Lines;
-                    diffCountLabel.text = loadedDiff.DifferenceCount + " differences";
-                    UpdateDiffSearch(false);
-                    return;
-                }
-                // The Scene view reads the file itself: the text diff arriving only updates the count.
+                // The Scene view reads the file itself: the text diff arriving changes nothing there.
                 if (localDiffPaneRoot != null && (localDiffPaneRoot.Q<SemanticDiffView>() != null || localDiffPaneRoot.Q<ModelCompareView>() != null))
-                {
-                    if (diffCountLabel != null) diffCountLabel.text = loadedDiff.DifferenceCount + " differences";
                     return;
-                }
                 RememberScrollOffsets();
                 RebuildLocalDiffPane();
                 RestoreScrollOffsets();
@@ -371,85 +444,22 @@ namespace Orbiters.UnitGit.Editor
 
         private void UpdateDiffSearch(bool scrollToMatch)
         {
-            if (indexedDiff != loadedDiff || indexedDiffSearch != diffSearch)
-            {
-                diffMatches.Clear();
-                diffMatchRows.Clear();
-                if (loadedDiff != null && !string.IsNullOrWhiteSpace(diffSearch))
-                {
-                    for (int i = 0; i < loadedDiff.Lines.Count; i++)
-                    {
-                        var line = loadedDiff.Lines[i];
-                        if ((line.Left ?? string.Empty).IndexOf(diffSearch, StringComparison.OrdinalIgnoreCase) < 0 &&
-                            (line.Right ?? string.Empty).IndexOf(diffSearch, StringComparison.OrdinalIgnoreCase) < 0)
-                            continue;
-                        diffMatches.Add(i);
-                        diffMatchRows.Add(i);
-                    }
-                }
-                indexedDiff = loadedDiff;
-                indexedDiffSearch = diffSearch;
-            }
-            diffSearchMatchIndex = diffMatches.Count == 0 ? 0 : Math.Min(diffSearchMatchIndex, diffMatches.Count - 1);
-            diffList?.RefreshItems();
-            if (scrollToMatch && diffMatches.Count > 0)
-            {
-                diffList?.ScrollToItem(diffMatches[diffSearchMatchIndex]);
-                var line = loadedDiff.Lines[diffMatches[diffSearchMatchIndex]];
-                int column = line.Left.IndexOf(diffSearch, StringComparison.OrdinalIgnoreCase);
-                float offset = 0;
-                if (column < 0)
-                {
-                    column = line.Right.IndexOf(diffSearch, StringComparison.OrdinalIgnoreCase);
-                    offset = diffColumnWidth;
-                }
-                var scroll = diffList?.Q<ScrollView>();
-                if (scroll != null)
-                    scroll.scrollOffset = new Vector2(offset + Mathf.Max(0, column - 8) * diffCharacterWidth, scroll.scrollOffset.y);
-            }
-        }
-
-        private void BindDiffCell(VisualElement cell, string text, float columnOffset)
-        {
-            var scroll = diffList?.Q<ScrollView>();
-            float x = scroll != null ? scroll.scrollOffset.x : 0;
-            float width = scroll != null ? scroll.contentViewport.layout.width : 1000;
-            if (float.IsNaN(width) || width <= 0)
-                width = 1000;
-            int start = Mathf.Clamp(Mathf.FloorToInt((x - columnOffset - 12) / diffCharacterWidth), 0, text.Length);
-            int count = Math.Min(text.Length - start, Mathf.CeilToInt(width / diffCharacterWidth) + 2);
-            var label = (Label)cell[0];
-            // Horizontally virtualize long YAML/JSON lines too; Unity cannot mesh unlimited text.
-            label.text = columnOffset > x + width ? string.Empty : text.Substring(start, count);
-            label.style.left = 12 + start * diffCharacterWidth;
-            cell.style.width = diffColumnWidth;
-            cell.style.minWidth = diffColumnWidth;
-            cell.style.flexGrow = 0;
-            cell.style.flexShrink = 0;
-        }
-
-        private Button BuildDiffToolButton(UnitGitIconKind kind, string tooltip, Action action)
-        {
-            var button = new Button(action) { tooltip = tooltip };
-            button.AddToClassList("unitgit-diff-tool-button");
-            var icon = new UnitGitIconElement(kind);
-            icon.AddToClassList("unitgit-diff-tool-icon");
-            button.Add(icon);
-            return button;
+            diffViewer?.Search(diffSearch, scrollToMatch);
+            UpdateDiffCount();
         }
 
         private void PreviousDiffSearchMatch() { MoveDiffSearchMatch(-1); }
         private void NextDiffSearchMatch() { MoveDiffSearchMatch(1); }
         private void MoveDiffSearchMatch(int step)
         {
-            UpdateDiffSearch(false);
-            if (diffMatches.Count == 0)
+            if (diffViewer == null || diffViewer.MatchCount == 0)
             {
                 diffSearchField?.Focus();
                 return;
             }
-            diffSearchMatchIndex = (diffSearchMatchIndex + diffMatches.Count + step) % diffMatches.Count;
-            UpdateDiffSearch(true);
+            diffViewer.MoveMatch(step);
+            diffSearchMatchIndex = diffViewer.MatchIndex;
+            UpdateDiffCount();
         }
     }
 }

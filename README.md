@@ -6,16 +6,46 @@ Open it from `Tools > Orbiters > Unit Git`.
 
 ## Features
 
-- browse local and remote branches
-- inspect commit history and changed files
-- view project status and local changes
-- stage, unstage, commit, fetch, pull, checkout, and shelve changes
+The window follows JetBrains IDEs' Git tool window, in the style of the other Orbiters tools.
+
+- **Top bar**: the tabs (Changes with its count, Log, Shelf, Conflicts when needed, Backups, Console), what is running,
+  the **branch widget** (current branch, commits to push and pull; click for every branch with Checkout, New branch
+  from, Merge into current, Update and Delete) and Update (pull, fast-forward only), Push, Fetch, Refresh and Settings.
+  Shortcuts: **Ctrl+K** commit, **Ctrl+Shift+K** push, **Ctrl+T** update, **F5** refresh. Results show as short
+  notifications; failures stay longer and lead to the Console.
+- **Changes**: every change with a box saying whether it goes into the next commit (Git's staging, per file or folder;
+  a folder's box shows when only some of its files are in), grouped as changes and unversioned files, in folders
+  (single-child chains shown as one row) or flat, with JetBrains' status colours and letters and a filter. Multi-select
+  with Ctrl/Shift, arrows, Space to include or exclude, Delete to roll back; the context menu opens, reveals and copies
+  paths. **Rollback** returns tracked files to their last commit and moves new files to the trash (assets) after a
+  confirmation. Under the list: the message (Ctrl+Enter commits), **Amend** (edits the last commit and its message) and
+  **Commit** / **Commit and Push**, which can be clicked while ticked files are still being added (the commit follows).
+- **Diff**: side by side, as in JetBrains IDEs: line numbers at each side's edge, added/removed/changed lines tinted and
+  the changed part of a changed line highlighted, a middle column joining the two versions of each change, and markers
+  beside each side showing where every change is in the whole file (drag them to scroll, click to jump). Unchanged
+  stretches fold away with 4 lines kept around each change (the band shows them all, its arrows 20 more lines; the
+  toolbar switches folding off). A dropdown ignores whitespace as JetBrains does (trim, all, all and empty lines). It
+  opens at the first change; the arrows (F7 / Shift+F7) move between changes, then on to the next file, or between
+  matches while searching (Ctrl+F). In Changes, **»** puts one change of the file on disk back as its last commit had it
+  (the notification can undo it). Scenes, prefabs and models also offer the Scene view and 3D (beta, below).
+- **Log**: branches on the left (HEAD, local, remote in folders; a click shows that branch's history, a double click
+  checks it out, a right click has the rest), the commit graph with every lane, branch and tag labels, avatar
+  initials, dates and hashes, search (text or hash) and Branch, User and Date filters; older commits load as you
+  scroll. Columns give way to the subject when the log is narrow. The selected commit's files (status colours, tree;
+  a double click opens its diff in a window) sit above its message, author, date, hash (copy) and parents (a click
+  selects them). A commit's menu: New branch from here, Cherry-Pick, Revert, Rename, Reset current branch to here
+  (Soft, Mixed, Keep, Hard), Squash selected commits, copy hash or subject.
+- **Shelf**: changes set aside (Git stashes) with their files and diff; **Shelve changes** asks for a name,
+  **Unshelve** brings them back and removes the shelf, **Apply** keeps it, **Delete** asks first.
+- **Console**: every Git command and its output, newest at the bottom, filterable and copyable.
 - initialize a missing project-root Git repository with a VRChat Unity `.gitignore`
 - keep MCB's downloaded version patches (`Assets/MCB/assets/*/versions/**/*.bin`) out of Git, also in existing
-  repositories; when some were committed earlier, Local Changes offers **Stop tracking** (they stay on disk)
-- merge a branch into the current one (**Merge into current** under the branches)
+  repositories; when some were committed earlier, Changes offers **Stop tracking** (they stay on disk)
+- connect a GitHub or GitLab remote with their command line tools (Settings or the Log's branches)
 
-Unit Git intentionally does not expose a push action. Pushes should happen only from an explicit external request or workflow.
+Only destructive operations ask first: deleting a branch or a shelf, rolling files back, resetting, squashing or
+rewriting commits. Commit, pull (fast-forward only), push (never forced), checkout and merge run at once; Git refuses
+anything that would lose local changes.
 
 ### Backups
 

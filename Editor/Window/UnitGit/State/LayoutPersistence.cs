@@ -49,7 +49,8 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
-        private TwoPaneSplitView BuildTrackedSplit(string prefKey, int fixedPaneIndex, float defaultFixedPaneSize)
+        private TwoPaneSplitView BuildTrackedSplit(string prefKey, int fixedPaneIndex, float defaultFixedPaneSize,
+            TwoPaneSplitViewOrientation orientation = TwoPaneSplitViewOrientation.Horizontal)
         {
             float fixedPaneSize = splitSizes.TryGetValue(prefKey, out float sessionSize)
                 ? sessionSize
@@ -57,8 +58,9 @@ namespace Orbiters.UnitGit.Editor
             var split = new TwoPaneSplitView(
                 fixedPaneIndex,
                 fixedPaneSize,
-                TwoPaneSplitViewOrientation.Horizontal);
+                orientation);
             split.AddToClassList("unitgit-split-view");
+            if (orientation == TwoPaneSplitViewOrientation.Vertical) split.AddToClassList("unitgit-split-view--vertical");
             TrackSplitDrag(split, prefKey, fixedPaneIndex);
             return split;
         }
@@ -137,10 +139,11 @@ namespace Orbiters.UnitGit.Editor
             }
 
             Vector2 localPosition = split.WorldToLocal(worldPosition);
-            float dividerX = fixedPaneIndex == 0
-                ? split[fixedPaneIndex].resolvedStyle.width
-                : split.resolvedStyle.width - split[fixedPaneIndex].resolvedStyle.width;
-            return Mathf.Abs(localPosition.x - dividerX) <= 10f;
+            bool vertical = split.orientation == TwoPaneSplitViewOrientation.Vertical;
+            float size = vertical ? split[fixedPaneIndex].resolvedStyle.height : split[fixedPaneIndex].resolvedStyle.width;
+            float total = vertical ? split.resolvedStyle.height : split.resolvedStyle.width;
+            float divider = fixedPaneIndex == 0 ? size : total - size;
+            return Mathf.Abs((vertical ? localPosition.y : localPosition.x) - divider) <= 10f;
         }
 
         private void SaveSplitSize(TwoPaneSplitView split, string prefKey, int fixedPaneIndex)
@@ -151,23 +154,18 @@ namespace Orbiters.UnitGit.Editor
             }
 
             var fixedPane = split[fixedPaneIndex];
-            float width = fixedPane.resolvedStyle.width;
-            if (width >= 160f && width <= 1400f)
+            bool vertical = split.orientation == TwoPaneSplitViewOrientation.Vertical;
+            float size = vertical ? fixedPane.resolvedStyle.height : fixedPane.resolvedStyle.width;
+            if (size >= (vertical ? 60f : 160f) && size <= 1400f)
             {
-                splitSizes[prefKey] = width;
-                EditorPrefs.SetFloat(prefKey, width);
+                splitSizes[prefKey] = size;
+                EditorPrefs.SetFloat(prefKey, size);
             }
         }
 
         private bool GetFoldoutExpanded(string prefKey, bool defaultValue)
         {
             return EditorPrefs.GetBool(prefKey, defaultValue);
-        }
-
-        private void ToggleFoldout(string prefKey, bool defaultValue)
-        {
-            EditorPrefs.SetBool(prefKey, !GetFoldoutExpanded(prefKey, defaultValue));
-            RebuildContent();
         }
 
         private static string GetFoldoutPrefKey(string scope, string value)

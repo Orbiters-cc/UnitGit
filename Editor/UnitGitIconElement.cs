@@ -14,263 +14,311 @@ namespace Orbiters.UnitGit.Editor
         GitHub,
         PreviousDifference,
         NextDifference,
-        Search
+        Search,
+        Refresh,
+        Commit,
+        Push,
+        Pull,
+        Branch,
+        Settings,
+        Rollback,
+        Shelve,
+        Diff,
+        Folder,
+        ExpandAll,
+        CollapseAll,
+        Copy,
+        Tag,
+        Star,
+        Close,
+        Console,
+        Backup,
+        Conflict,
+        Merge,
+        CherryPick,
+        More,
+        Check,
+        Dash,
+        Log,
+        Changes,
+        Filter,
+        User,
+        Calendar,
+        Remote,
+        ApplyLeft,
+        CollapseUnchanged,
+        FoldUp,
+        FoldDown,
+        Undo
     }
 
+    /// <summary>
+    /// A line icon drawn with the vector API in a 24 x 24 box, crisp at any size. Its colour comes from the USS custom
+    /// property <c>--icon-color</c> (and <c>--icon-width</c> for the stroke), so hover and selected states restyle it like text.
+    /// </summary>
     internal sealed class UnitGitIconElement : VisualElement
     {
-        private readonly UnitGitIconKind kind;
+        private static readonly CustomStyleProperty<Color> ColorProperty = new CustomStyleProperty<Color>("--icon-color");
+        private static readonly CustomStyleProperty<float> WidthProperty = new CustomStyleProperty<float>("--icon-width");
+        private UnitGitIconKind kind;
+        private Color color = new Color(0.84f, 0.84f, 0.86f);
+        private float strokeWidth = 1.8f;
 
         public UnitGitIconElement(UnitGitIconKind kind)
         {
             this.kind = kind;
+            AddToClassList("unitgit-icon");
             pickingMode = PickingMode.Ignore;
             generateVisualContent += DrawIcon;
+            RegisterCallback<CustomStyleResolvedEvent>(_ =>
+            {
+                bool dirty = false;
+                if (customStyle.TryGetValue(ColorProperty, out var resolved) && resolved != color) { color = resolved; dirty = true; }
+                if (customStyle.TryGetValue(WidthProperty, out float width) && !Mathf.Approximately(width, strokeWidth)) { strokeWidth = width; dirty = true; }
+                if (dirty) MarkDirtyRepaint();
+            });
+        }
+
+        public UnitGitIconKind Kind
+        {
+            get => kind;
+            set { if (kind == value) return; kind = value; MarkDirtyRepaint(); }
         }
 
         private void DrawIcon(MeshGenerationContext context)
         {
             Rect rect = contentRect;
-            if (rect.width <= 0f || rect.height <= 0f)
-            {
-                return;
-            }
+            float s = Mathf.Min(rect.width, rect.height) / 24f;
+            if (s <= 0f) return;
+            var o = new Vector2(rect.x + (rect.width - 24f * s) * 0.5f, rect.y + (rect.height - 24f * s) * 0.5f);
+            Vector2 P(float x, float y) => o + new Vector2(x, y) * s;
+            var p = context.painter2D;
+            p.strokeColor = color;
+            p.fillColor = color;
+            p.lineJoin = LineJoin.Round;
+            p.lineCap = LineCap.Round;
+            p.lineWidth = strokeWidth * s;
 
-            var painter = context.painter2D;
-            painter.fillColor = Color.white;
-            painter.strokeColor = Color.white;
-            painter.lineWidth = 0f;
+            void Line(params Vector2[] points)
+            {
+                p.BeginPath();
+                p.MoveTo(points[0]);
+                for (int i = 1; i < points.Length; i++) p.LineTo(points[i]);
+                p.Stroke();
+            }
+            void Closed(params Vector2[] points)
+            {
+                p.BeginPath();
+                p.MoveTo(points[0]);
+                for (int i = 1; i < points.Length; i++) p.LineTo(points[i]);
+                p.ClosePath();
+                p.Stroke();
+            }
+            void Filled(params Vector2[] points)
+            {
+                p.BeginPath();
+                p.MoveTo(points[0]);
+                for (int i = 1; i < points.Length; i++) p.LineTo(points[i]);
+                p.ClosePath();
+                p.Fill();
+            }
+            void Circle(float x, float y, float r) { p.BeginPath(); p.Arc(P(x, y), r * s, 0f, 360f); p.Stroke(); }
+            void Dot(float x, float y, float r) { p.BeginPath(); p.Arc(P(x, y), r * s, 0f, 360f); p.Fill(); }
+            void Arc(float x, float y, float r, float from, float to) { p.BeginPath(); p.Arc(P(x, y), r * s, from, to); p.Stroke(); }
+            void RoundRect(float x, float y, float w, float h, float r)
+            {
+                p.BeginPath();
+                p.MoveTo(P(x + r, y));
+                p.LineTo(P(x + w - r, y));
+                p.ArcTo(P(x + w, y), P(x + w, y + r), r * s);
+                p.LineTo(P(x + w, y + h - r));
+                p.ArcTo(P(x + w, y + h), P(x + w - r, y + h), r * s);
+                p.LineTo(P(x + r, y + h));
+                p.ArcTo(P(x, y + h), P(x, y + h - r), r * s);
+                p.LineTo(P(x, y + r));
+                p.ArcTo(P(x, y), P(x + r, y), r * s);
+                p.ClosePath();
+                p.Stroke();
+            }
 
             switch (kind)
             {
                 case UnitGitIconKind.ChevronCollapsed:
-                    DrawTriangle(painter, rect, 16f, 16f, new[]
-                    {
-                        new Vector2(6f, 3.5f),
-                        new Vector2(11f, 8f),
-                        new Vector2(6f, 12.5f)
-                    });
+                    Line(P(9.5f, 6.5f), P(15f, 12f), P(9.5f, 17.5f));
                     break;
                 case UnitGitIconKind.ChevronExpanded:
-                    DrawTriangle(painter, rect, 16f, 16f, new[]
-                    {
-                        new Vector2(3.5f, 6f),
-                        new Vector2(12.5f, 6f),
-                        new Vector2(8f, 11f)
-                    });
+                    Line(P(6.5f, 9.5f), P(12f, 15f), P(17.5f, 9.5f));
+                    break;
+                case UnitGitIconKind.Branch:
+                    Circle(7f, 5.5f, 2.2f); Circle(7f, 18.5f, 2.2f); Circle(17f, 7.5f, 2.2f);
+                    Line(P(7f, 7.7f), P(7f, 16.3f));
+                    p.BeginPath(); p.MoveTo(P(17f, 9.7f)); p.BezierCurveTo(P(17f, 14f), P(7f, 12f), P(7f, 16.3f)); p.Stroke();
                     break;
                 case UnitGitIconKind.CreateBranch:
-                    DrawCreateBranch(painter, rect);
+                    Circle(6f, 5.5f, 2.2f); Circle(6f, 18.5f, 2.2f);
+                    Line(P(6f, 7.7f), P(6f, 16.3f));
+                    Line(P(17f, 6f), P(17f, 14f)); Line(P(13f, 10f), P(21f, 10f));
+                    break;
+                case UnitGitIconKind.Merge:
+                    Circle(7f, 5.5f, 2.2f); Circle(7f, 18.5f, 2.2f); Circle(17f, 18.5f, 2.2f);
+                    Line(P(7f, 7.7f), P(7f, 16.3f));
+                    p.BeginPath(); p.MoveTo(P(7f, 8.5f)); p.BezierCurveTo(P(7f, 13f), P(17f, 11f), P(17f, 16.3f)); p.Stroke();
                     break;
                 case UnitGitIconKind.Update:
-                    DrawUpdate(painter, rect);
+                case UnitGitIconKind.Pull:
+                    Line(P(12f, 4f), P(12f, 15f)); Line(P(7.5f, 10.5f), P(12f, 15f), P(16.5f, 10.5f));
+                    Line(P(5f, 19.5f), P(19f, 19.5f));
                     break;
-                case UnitGitIconKind.Delete:
-                    DrawDelete(painter, rect);
+                case UnitGitIconKind.Push:
+                    Line(P(12f, 15f), P(12f, 4f)); Line(P(7.5f, 8.5f), P(12f, 4f), P(16.5f, 8.5f));
+                    Line(P(5f, 19.5f), P(19f, 19.5f));
                     break;
                 case UnitGitIconKind.Fetch:
-                    DrawFetch(painter, rect);
+                    p.BeginPath(); p.MoveTo(P(7.5f, 17.5f)); p.BezierCurveTo(P(3.5f, 17.5f), P(3f, 11.5f), P(7.2f, 11f));
+                    p.BezierCurveTo(P(7.5f, 6f), P(15f, 5f), P(16.5f, 9.5f)); p.BezierCurveTo(P(21f, 9.5f), P(21.5f, 17.5f), P(16.5f, 17.5f)); p.Stroke();
+                    Line(P(12f, 11f), P(12f, 20f)); Line(P(9.5f, 17.5f), P(12f, 20f), P(14.5f, 17.5f));
                     break;
+                case UnitGitIconKind.Remote:
                 case UnitGitIconKind.GitHub:
-                    DrawGitHub(painter, rect);
+                    p.BeginPath(); p.MoveTo(P(7.5f, 18f)); p.BezierCurveTo(P(3.5f, 18f), P(3f, 12f), P(7.2f, 11.5f));
+                    p.BezierCurveTo(P(7.5f, 6.5f), P(15f, 5.5f), P(16.5f, 10f)); p.BezierCurveTo(P(21f, 10f), P(21.5f, 18f), P(16.5f, 18f));
+                    p.ClosePath(); p.Stroke();
+                    break;
+                case UnitGitIconKind.Delete:
+                    Line(P(4.5f, 6.5f), P(19.5f, 6.5f)); Line(P(9.5f, 6.5f), P(10f, 4f), P(14f, 4f), P(14.5f, 6.5f));
+                    Line(P(6.5f, 6.5f), P(7.5f, 20f), P(16.5f, 20f), P(17.5f, 6.5f));
+                    Line(P(10.2f, 10f), P(10.4f, 16.5f)); Line(P(13.8f, 10f), P(13.6f, 16.5f));
                     break;
                 case UnitGitIconKind.PreviousDifference:
-                    DrawTriangle(painter, rect, 16f, 16f, new[]
-                    {
-                        new Vector2(8f, 3f),
-                        new Vector2(13f, 11f),
-                        new Vector2(3f, 11f)
-                    });
+                    Line(P(12f, 19f), P(12f, 5f)); Line(P(6.5f, 10.5f), P(12f, 5f), P(17.5f, 10.5f));
                     break;
                 case UnitGitIconKind.NextDifference:
-                    DrawTriangle(painter, rect, 16f, 16f, new[]
-                    {
-                        new Vector2(3f, 5f),
-                        new Vector2(13f, 5f),
-                        new Vector2(8f, 13f)
-                    });
+                    Line(P(12f, 5f), P(12f, 19f)); Line(P(6.5f, 13.5f), P(12f, 19f), P(17.5f, 13.5f));
                     break;
                 case UnitGitIconKind.Search:
-                    DrawSearch(painter, rect);
+                    Circle(10.5f, 10.5f, 5.5f); Line(P(14.7f, 14.7f), P(19.5f, 19.5f));
+                    break;
+                case UnitGitIconKind.Filter:
+                    Line(P(4.5f, 6f), P(19.5f, 6f), P(14f, 12.5f), P(14f, 18.5f), P(10f, 20f), P(10f, 12.5f), P(4.5f, 6f));
+                    break;
+                case UnitGitIconKind.Refresh:
+                    Arc(12f, 12f, 7f, -60f, 250f);
+                    Filled(P(15.4f, 2.4f), P(19.8f, 6.3f), P(14.2f, 8.1f));
+                    break;
+                case UnitGitIconKind.Rollback:
+                    p.BeginPath(); p.MoveTo(P(8f, 9f)); p.LineTo(P(15f, 9f)); p.BezierCurveTo(P(22f, 9f), P(22f, 19.5f), P(15f, 19.5f)); p.LineTo(P(10f, 19.5f)); p.Stroke();
+                    Line(P(11.5f, 5f), P(7.5f, 9f), P(11.5f, 13f));
+                    break;
+                case UnitGitIconKind.Commit:
+                case UnitGitIconKind.Check:
+                    Line(P(5f, 12.5f), P(10f, 17.5f), P(19f, 7f));
+                    break;
+                case UnitGitIconKind.Dash:
+                    Line(P(6f, 12f), P(18f, 12f));
+                    break;
+                case UnitGitIconKind.Shelve:
+                    Closed(P(4f, 10f), P(4f, 19.5f), P(20f, 19.5f), P(20f, 10f));
+                    Line(P(4f, 10f), P(7f, 5f), P(17f, 5f), P(20f, 10f));
+                    Line(P(9.5f, 13.5f), P(14.5f, 13.5f));
+                    break;
+                case UnitGitIconKind.Diff:
+                    RoundRect(3.5f, 5f, 17f, 14f, 2.5f); Line(P(12f, 5f), P(12f, 19f));
+                    Line(P(6.5f, 9.5f), P(9f, 9.5f)); Line(P(15f, 9.5f), P(17.5f, 9.5f)); Line(P(15f, 13.5f), P(17.5f, 13.5f));
+                    break;
+                case UnitGitIconKind.Folder:
+                    Closed(P(3.5f, 7f), P(3.5f, 18.5f), P(20.5f, 18.5f), P(20.5f, 9f), P(11.5f, 9f), P(9.5f, 6.5f), P(4f, 6.5f));
+                    break;
+                // JetBrains' pair: flat chevrons leaving (expand) or reaching (collapse) a middle line.
+                case UnitGitIconKind.ExpandAll:
+                    Line(P(6.5f, 7.5f), P(12f, 3.5f), P(17.5f, 7.5f)); Line(P(6.5f, 16.5f), P(12f, 20.5f), P(17.5f, 16.5f));
+                    Line(P(5f, 12f), P(19f, 12f));
+                    break;
+                case UnitGitIconKind.CollapseAll:
+                    Line(P(6.5f, 3.5f), P(12f, 7.5f), P(17.5f, 3.5f)); Line(P(6.5f, 20.5f), P(12f, 16.5f), P(17.5f, 20.5f));
+                    Line(P(5f, 12f), P(19f, 12f));
+                    break;
+                case UnitGitIconKind.ApplyLeft:
+                    Line(P(5.5f, 6.5f), P(11f, 12f), P(5.5f, 17.5f)); Line(P(12.5f, 6.5f), P(18f, 12f), P(12.5f, 17.5f));
+                    break;
+                case UnitGitIconKind.CollapseUnchanged:
+                    Line(P(8f, 3.5f), P(12f, 7.5f), P(16f, 3.5f)); Line(P(8f, 20.5f), P(12f, 16.5f), P(16f, 20.5f));
+                    Line(P(4f, 12f), P(6.5f, 12f)); Line(P(10.75f, 12f), P(13.25f, 12f)); Line(P(17.5f, 12f), P(20f, 12f));
+                    break;
+                case UnitGitIconKind.FoldUp:
+                    Line(P(5f, 4.5f), P(19f, 4.5f)); Line(P(7f, 14f), P(12f, 9f), P(17f, 14f)); Line(P(12f, 9f), P(12f, 20f));
+                    break;
+                case UnitGitIconKind.FoldDown:
+                    Line(P(5f, 19.5f), P(19f, 19.5f)); Line(P(7f, 10f), P(12f, 15f), P(17f, 10f)); Line(P(12f, 15f), P(12f, 4f));
+                    break;
+                case UnitGitIconKind.Undo:
+                    p.BeginPath(); p.MoveTo(P(8f, 9f)); p.LineTo(P(15f, 9f)); p.BezierCurveTo(P(22f, 9f), P(22f, 19.5f), P(15f, 19.5f)); p.LineTo(P(10f, 19.5f)); p.Stroke();
+                    Line(P(11.5f, 5f), P(7.5f, 9f), P(11.5f, 13f));
+                    break;
+                case UnitGitIconKind.Copy:
+                    RoundRect(8.5f, 8.5f, 11f, 11f, 2f);
+                    Line(P(15.5f, 5.5f), P(15.5f, 5f), P(6.5f, 4.5f)); Line(P(4.5f, 6.5f), P(4.5f, 15.5f), P(5.5f, 15.5f));
+                    break;
+                case UnitGitIconKind.Tag:
+                    Closed(P(4f, 4f), P(12f, 4f), P(20f, 12f), P(12f, 20f), P(4f, 12f));
+                    Dot(8.5f, 8.5f, 1.4f);
+                    break;
+                case UnitGitIconKind.Star:
+                    {
+                        var points = new Vector2[10];
+                        for (int i = 0; i < 10; i++)
+                        {
+                            float angle = (-90f + i * 36f) * Mathf.Deg2Rad;
+                            float r = i % 2 == 0 ? 8.5f : 3.8f;
+                            points[i] = P(12f + Mathf.Cos(angle) * r, 12.5f + Mathf.Sin(angle) * r);
+                        }
+                        Filled(points);
+                    }
+                    break;
+                case UnitGitIconKind.Close:
+                    Line(P(6.5f, 6.5f), P(17.5f, 17.5f)); Line(P(17.5f, 6.5f), P(6.5f, 17.5f));
+                    break;
+                case UnitGitIconKind.Console:
+                    RoundRect(3.5f, 4.5f, 17f, 15f, 2.5f); Line(P(7.5f, 9.5f), P(10.5f, 12f), P(7.5f, 14.5f)); Line(P(12.5f, 15f), P(16.5f, 15f));
+                    break;
+                case UnitGitIconKind.Backup:
+                    RoundRect(4f, 4f, 16f, 5f, 1.5f); Closed(P(5f, 9f), P(5f, 19.5f), P(19f, 19.5f), P(19f, 9f)); Line(P(10f, 13f), P(14f, 13f));
+                    break;
+                case UnitGitIconKind.Conflict:
+                    Closed(P(12f, 4f), P(21f, 19.5f), P(3f, 19.5f)); Line(P(12f, 9.5f), P(12f, 14f)); Dot(12f, 16.8f, 1.2f);
+                    break;
+                case UnitGitIconKind.CherryPick:
+                    Circle(8f, 16.5f, 3.5f); Circle(16.5f, 16.5f, 3.5f);
+                    p.BeginPath(); p.MoveTo(P(8f, 13f)); p.BezierCurveTo(P(9f, 8f), P(12f, 5f), P(15f, 4f)); p.Stroke();
+                    p.BeginPath(); p.MoveTo(P(16.5f, 13f)); p.BezierCurveTo(P(16f, 9f), P(15.5f, 6f), P(15f, 4f)); p.Stroke();
+                    break;
+                case UnitGitIconKind.More:
+                    Dot(6f, 12f, 1.6f); Dot(12f, 12f, 1.6f); Dot(18f, 12f, 1.6f);
+                    break;
+                case UnitGitIconKind.Settings:
+                    Circle(12f, 12f, 3f);
+                    for (int i = 0; i < 8; i++)
+                    {
+                        float angle = i * 45f * Mathf.Deg2Rad;
+                        var direction = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle));
+                        Line(P(12f + direction.x * 6f, 12f + direction.y * 6f), P(12f + direction.x * 8.5f, 12f + direction.y * 8.5f));
+                    }
+                    Circle(12f, 12f, 6f);
+                    break;
+                case UnitGitIconKind.Log:
+                    Circle(12f, 12f, 8f); Line(P(12f, 7.5f), P(12f, 12f), P(15.5f, 14f));
+                    break;
+                case UnitGitIconKind.Changes:
+                    Closed(P(6f, 3.5f), P(14f, 3.5f), P(18.5f, 8f), P(18.5f, 20.5f), P(6f, 20.5f));
+                    Line(P(9f, 12.5f), P(15.5f, 12.5f)); Line(P(12.25f, 9.25f), P(12.25f, 15.75f));
+                    break;
+                case UnitGitIconKind.User:
+                    Circle(12f, 8.5f, 3.8f);
+                    p.BeginPath(); p.MoveTo(P(4.5f, 20f)); p.BezierCurveTo(P(5.5f, 14f), P(18.5f, 14f), P(19.5f, 20f)); p.Stroke();
+                    break;
+                case UnitGitIconKind.Calendar:
+                    RoundRect(4f, 5.5f, 16f, 14.5f, 2.5f); Line(P(4f, 10f), P(20f, 10f)); Line(P(8.5f, 3.5f), P(8.5f, 7f)); Line(P(15.5f, 3.5f), P(15.5f, 7f));
                     break;
             }
-        }
-
-        private static void DrawCreateBranch(Painter2D painter, Rect rect)
-        {
-            DrawSegment(painter, rect, 24f, 24f, new Vector2(8f, 4f), new Vector2(8f, 20f), 2f);
-            DrawSegment(painter, rect, 24f, 24f, new Vector2(8f, 12f), new Vector2(15f, 12f), 2f);
-            DrawCircle(painter, rect, 24f, 24f, new Vector2(8f, 4f), 2.6f, 18);
-            DrawCircle(painter, rect, 24f, 24f, new Vector2(8f, 20f), 2.6f, 18);
-            DrawSegment(painter, rect, 24f, 24f, new Vector2(17f, 8f), new Vector2(17f, 16f), 2f);
-            DrawSegment(painter, rect, 24f, 24f, new Vector2(13f, 12f), new Vector2(21f, 12f), 2f);
-        }
-
-        private static void DrawUpdate(Painter2D painter, Rect rect)
-        {
-            DrawArc(painter, rect, 24f, 24f, new Vector2(12f, 12f), 8f, 35f, 318f, 2f);
-            DrawTriangle(painter, rect, 24f, 24f, new[]
-            {
-                new Vector2(5.1f, 18f),
-                new Vector2(5.1f, 11.5f),
-                new Vector2(11.4f, 18f)
-            });
-        }
-
-        private static void DrawDelete(Painter2D painter, Rect rect)
-        {
-            DrawPolygon(painter, rect, 24f, 24f, new[]
-            {
-                new Vector2(3f, 4f),
-                new Vector2(8f, 4f),
-                new Vector2(8f, 3f),
-                new Vector2(9f, 2f),
-                new Vector2(15f, 2f),
-                new Vector2(16f, 3f),
-                new Vector2(16f, 4f),
-                new Vector2(21f, 4f),
-                new Vector2(22f, 5f),
-                new Vector2(21f, 6f),
-                new Vector2(3f, 6f),
-                new Vector2(2f, 5f)
-            });
-
-            DrawPolygon(painter, rect, 24f, 24f, new[]
-            {
-                new Vector2(4f, 8f),
-                new Vector2(20f, 8f),
-                new Vector2(18.25f, 20.28f),
-                new Vector2(17.48f, 21.55f),
-                new Vector2(16.27f, 22f),
-                new Vector2(7.74f, 22f),
-                new Vector2(6.52f, 21.55f),
-                new Vector2(5.76f, 20.28f)
-            });
-        }
-
-        private static void DrawFetch(Painter2D painter, Rect rect)
-        {
-            DrawSegment(painter, rect, 24f, 24f, new Vector2(18f, 6f), new Vector2(7f, 17f), 2.2f);
-            DrawSegment(painter, rect, 24f, 24f, new Vector2(7f, 17f), new Vector2(18f, 17f), 2.2f);
-            DrawSegment(painter, rect, 24f, 24f, new Vector2(7f, 17f), new Vector2(7f, 6f), 2.2f);
-        }
-
-        private static void DrawGitHub(Painter2D painter, Rect rect)
-        {
-            DrawCircle(painter, rect, 20f, 20f, new Vector2(10f, 8.8f), 5.5f, 28);
-            DrawTriangle(painter, rect, 20f, 20f, new[]
-            {
-                new Vector2(5.7f, 5.9f),
-                new Vector2(5.2f, 2.8f),
-                new Vector2(8.2f, 4.6f)
-            });
-            DrawTriangle(painter, rect, 20f, 20f, new[]
-            {
-                new Vector2(14.3f, 5.9f),
-                new Vector2(14.8f, 2.8f),
-                new Vector2(11.8f, 4.6f)
-            });
-            DrawBox(painter, rect, 20f, 20f, 7f, 13.2f, 6f, 3.4f);
-            DrawSegment(painter, rect, 20f, 20f, new Vector2(8.1f, 15.7f), new Vector2(8.1f, 18.1f), 1.5f);
-            DrawSegment(painter, rect, 20f, 20f, new Vector2(10f, 15.7f), new Vector2(10f, 18.2f), 1.5f);
-            DrawSegment(painter, rect, 20f, 20f, new Vector2(11.9f, 15.7f), new Vector2(11.9f, 18.1f), 1.5f);
-            DrawSegment(painter, rect, 20f, 20f, new Vector2(7.4f, 15.2f), new Vector2(5.6f, 14.2f), 1.3f);
-        }
-
-        private static void DrawSearch(Painter2D painter, Rect rect)
-        {
-            DrawArc(painter, rect, 16f, 16f, new Vector2(6.8f, 6.8f), 4.2f, 0f, 360f, 1.9f);
-            DrawSegment(painter, rect, 16f, 16f, new Vector2(9.8f, 9.8f), new Vector2(13.1f, 13.1f), 2f);
-        }
-
-        private static void DrawArc(Painter2D painter, Rect rect, float viewWidth, float viewHeight, Vector2 center, float radius, float startDegrees, float endDegrees, float width)
-        {
-            const int segments = 24;
-            Vector2 previous = PointOnCircle(center, radius, startDegrees);
-            for (int i = 1; i <= segments; i++)
-            {
-                float angle = Mathf.Lerp(startDegrees, endDegrees, i / (float)segments);
-                Vector2 current = PointOnCircle(center, radius, angle);
-                DrawSegment(painter, rect, viewWidth, viewHeight, previous, current, width);
-                previous = current;
-            }
-        }
-
-        private static Vector2 PointOnCircle(Vector2 center, float radius, float degrees)
-        {
-            float radians = degrees * Mathf.Deg2Rad;
-            return center + new Vector2(Mathf.Cos(radians), Mathf.Sin(radians)) * radius;
-        }
-
-        private static void DrawBox(Painter2D painter, Rect rect, float viewWidth, float viewHeight, float x, float y, float width, float height)
-        {
-            DrawPolygon(painter, rect, viewWidth, viewHeight, new[]
-            {
-                new Vector2(x, y),
-                new Vector2(x + width, y),
-                new Vector2(x + width, y + height),
-                new Vector2(x, y + height)
-            });
-        }
-
-        private static void DrawSegment(Painter2D painter, Rect rect, float viewWidth, float viewHeight, Vector2 a, Vector2 b, float width)
-        {
-            Vector2 direction = b - a;
-            if (direction.sqrMagnitude <= Mathf.Epsilon)
-            {
-                DrawCircle(painter, rect, viewWidth, viewHeight, a, width * 0.5f, 12);
-                return;
-            }
-
-            Vector2 normal = new Vector2(-direction.y, direction.x).normalized * (width * 0.5f);
-            DrawPolygon(painter, rect, viewWidth, viewHeight, new[]
-            {
-                a + normal,
-                b + normal,
-                b - normal,
-                a - normal
-            });
-        }
-
-        private static void DrawTriangle(Painter2D painter, Rect rect, float viewWidth, float viewHeight, Vector2[] points)
-        {
-            DrawPolygon(painter, rect, viewWidth, viewHeight, points);
-        }
-
-        private static void DrawCircle(Painter2D painter, Rect rect, float viewWidth, float viewHeight, Vector2 center, float radius, int segments)
-        {
-            var points = new Vector2[segments];
-            for (int i = 0; i < segments; i++)
-            {
-                float angle = i / (float)segments * Mathf.PI * 2f;
-                points[i] = center + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius;
-            }
-
-            DrawPolygon(painter, rect, viewWidth, viewHeight, points);
-        }
-
-        private static void DrawPolygon(Painter2D painter, Rect rect, float viewWidth, float viewHeight, Vector2[] points)
-        {
-            float scale = Mathf.Min(rect.width / viewWidth, rect.height / viewHeight);
-            float offsetX = rect.x + (rect.width - viewWidth * scale) * 0.5f;
-            float offsetY = rect.y + (rect.height - viewHeight * scale) * 0.5f;
-
-            painter.BeginPath();
-            for (int i = 0; i < points.Length; i++)
-            {
-                Vector2 point = new Vector2(offsetX + points[i].x * scale, offsetY + points[i].y * scale);
-                if (i == 0)
-                {
-                    painter.MoveTo(point);
-                }
-                else
-                {
-                    painter.LineTo(point);
-                }
-            }
-
-            painter.ClosePath();
-            painter.Fill(FillRule.NonZero);
         }
     }
 }

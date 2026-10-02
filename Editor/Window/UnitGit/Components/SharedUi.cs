@@ -53,65 +53,6 @@ namespace Orbiters.UnitGit.Editor
             return label;
         }
 
-        private Button BuildFoldoutButton(string title, string detail, bool expanded, Action toggle, params string[] classNames)
-        {
-            var button = new Button();
-            button.AddToClassList("unitgit-foldout-button");
-            foreach (string className in classNames)
-            {
-                if (!string.IsNullOrWhiteSpace(className))
-                {
-                    button.AddToClassList(className);
-                }
-            }
-
-            var arrow = new UnitGitIconElement(expanded ? UnitGitIconKind.ChevronExpanded : UnitGitIconKind.ChevronCollapsed);
-            arrow.AddToClassList("unitgit-foldout-arrow");
-            button.Add(arrow);
-
-            var titleLabel = new Label(title);
-            titleLabel.AddToClassList("unitgit-foldout-title");
-            button.Add(titleLabel);
-
-            if (!string.IsNullOrWhiteSpace(detail))
-            {
-                var detailLabel = new Label(detail);
-                detailLabel.AddToClassList("unitgit-foldout-detail");
-                button.Add(detailLabel);
-            }
-
-            bool handledOnMouseDown = false;
-            button.RegisterCallback<MouseDownEvent>(evt =>
-            {
-                if (evt.button != 0)
-                {
-                    return;
-                }
-
-                handledOnMouseDown = true;
-                toggle();
-                evt.StopPropagation();
-            });
-            button.clicked += () =>
-            {
-                if (handledOnMouseDown)
-                {
-                    handledOnMouseDown = false;
-                    return;
-                }
-
-                toggle();
-            };
-            return button;
-        }
-
-        private Label BuildToolbarChip(string text)
-        {
-            var chip = new Label(text);
-            chip.AddToClassList("unitgit-toolbar-chip");
-            return chip;
-        }
-
         private Label BuildHeaderLabel(string text, string className)
         {
             var label = new Label(text);
@@ -120,17 +61,5 @@ namespace Orbiters.UnitGit.Editor
             return label;
         }
 
-        private Button BuildActionButton(string text, string extraClass, Action action)
-        {
-            var button = new Button(() => action());
-            button.text = text;
-            button.AddToClassList("unitgit-button");
-            if (!string.IsNullOrWhiteSpace(extraClass))
-            {
-                button.AddToClassList(extraClass);
-            }
-
-            return button;
-        }
     }
 }
