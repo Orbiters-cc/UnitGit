@@ -14,6 +14,70 @@ namespace Orbiters.UnitGit.Editor.Tests
     public sealed class UnitGitResponsivenessTests
     {
         [Test]
+        public void FilePreparationKeepsTheCompletionPumpAlive()
+        {
+            var window = ScriptableObject.CreateInstance<UnitGitWindow>();
+            try
+            {
+                Set(window, "includeRunning", true);
+                Invoke(window, "EnsureEditorUpdatePump");
+                Invoke(window, "DrainEditorQueues");
+                Assert.That(typeof(UnitGitWindow).GetField("editorUpdatePumpActive", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(window), Is.True);
+                bool delivered = false;
+                Invoke(window, "QueueMainThreadAction", (Action)(() => { delivered = true; Set(window, "includeRunning", false); }));
+                Invoke(window, "DrainEditorQueues");
+                Assert.True(delivered);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(window); }
+        }
+
+        [Test]
+        public void ReloadKeepsDraftAndExplainsInterruptedCommit()
+        {
+            var window = ScriptableObject.CreateInstance<UnitGitWindow>();
+            var restored = ScriptableObject.CreateInstance<UnitGitWindow>();
+            try
+            {
+                Set(window, "commitMessage", "my pending work");
+                Set(window, "pendingCommitDescription", "preparing files for your commit");
+                EditorJsonUtility.FromJsonOverwrite(EditorJsonUtility.ToJson(window), restored);
+                Invoke(restored, "OnDisable"); Invoke(restored, "OnEnable");
+                var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+                Assert.That(typeof(UnitGitWindow).GetField("commitMessage", flags).GetValue(restored), Is.EqualTo("my pending work"));
+                StringAssert.Contains("Unity reloaded", (string)typeof(UnitGitWindow).GetField("commitIssue", flags).GetValue(restored));
+                Assert.IsNull(typeof(UnitGitWindow).GetField("commitWhenIncluded", flags).GetValue(restored));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(window); UnityEngine.Object.DestroyImmediate(restored); }
+        }
+
+        [UnityTest]
+        public IEnumerator CommitImmediatelyAfterIncludingFilesCompletesWithoutAnotherClick()
+        {
+            using (var repo = UnitGitTestRepo.Create())
+            {
+                repo.Commit("initial"); repo.Write("Assets/new.txt", "new content");
+                var window = ScriptableObject.CreateInstance<UnitGitWindow>();
+                try
+                {
+                    Set(window, "gitService", repo.Git);
+                    var snapshot = repo.Git.BuildSnapshot("");
+                    Set(window, "snapshot", snapshot);
+                    Invoke(window, "BuildShell");
+                    Set(window, "commitMessage", "queued commit");
+                    Invoke(window, "SetIncluded", snapshot.Changes, true);
+                    Invoke(window, "CommitStaged", false);
+                    var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+                    double until = EditorApplication.timeSinceStartup + 20;
+                    while (EditorApplication.timeSinceStartup < until && !string.IsNullOrEmpty((string)typeof(UnitGitWindow).GetField("pendingCommitDescription", flags).GetValue(window))) yield return null;
+                    Assert.That(repo.Git.GetHeadCommitMessage().StandardOutput.Trim(), Is.EqualTo("queued commit"));
+                    // Let the final snapshot finish before disposing its temporary repository.
+                    while (EditorApplication.timeSinceStartup < until && (bool)typeof(UnitGitWindow).GetField("refreshingSnapshot", flags).GetValue(window)) yield return null;
+                }
+                finally { UnityEngine.Object.DestroyImmediate(window); }
+            }
+        }
+
+        [Test]
         public void CollapsingFoldersKeepsSiblingsAndRootFiles()
         {
             var list = UnitGitFileList.FromChanges(new[]

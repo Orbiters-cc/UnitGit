@@ -66,9 +66,11 @@ namespace Orbiters.UnitGit.Editor
         private string diffSearch = string.Empty;
         private int diffSearchMatchIndex;
         private TextField diffSearchField;
-        private string commitMessage = string.Empty;
-        private string commitMessageBeforeAmend = string.Empty;
-        private bool commitAmend;
+        [SerializeField] private string commitMessage = string.Empty;
+        [SerializeField] private string commitMessageBeforeAmend = string.Empty;
+        [SerializeField] private bool commitAmend;
+        [SerializeField] private string pendingCommitDescription;
+        [SerializeField] private string commitIssue;
         private bool excludePackageFolderFromInitialCommit = true;
         private bool busy;
         private bool refreshQueued;
@@ -92,6 +94,11 @@ namespace Orbiters.UnitGit.Editor
 
         private void OnEnable()
         {
+            if (!string.IsNullOrEmpty(pendingCommitDescription))
+            {
+                commitIssue = "Unity reloaded during " + pendingCommitDescription + ". Your message is preserved. Check Log for a completed commit before retrying; no commit or push was restarted automatically.";
+                pendingCommitDescription = null;
+            }
             ResetTransientAsyncState();
             gitService = new UnitGitService();
             initializer = new UnitGitProjectInitializer();
@@ -103,6 +110,7 @@ namespace Orbiters.UnitGit.Editor
 
         private void OnDisable()
         {
+            includeGeneration++;
             refreshRequestId++;
             diffRead.Dispose();
             detailsRead.Dispose();
@@ -121,6 +129,12 @@ namespace Orbiters.UnitGit.Editor
 
         private void ResetTransientAsyncState()
         {
+            includeGeneration++;
+            includeRunning = false;
+            includeRunningCount = 0;
+            includeQueue.Clear();
+            pendingInclude.Clear();
+            commitWhenIncluded = null;
             refreshRequestId++;
             requestedDiffPath = null;
             requestedSelection = null;

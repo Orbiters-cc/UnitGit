@@ -153,16 +153,20 @@ namespace Orbiters.UnitGit.Editor
                 ShowToast("Tick the files to commit first.", error: true);
                 return;
             }
-            if (busy) return;
+            if (busy) { ShowToast("Wait for " + (busyLabel ?? "the current Git operation") + " to finish. Details are in Console.", error: true); return; }
+            commitIssue = null;
             if (includeRunning || includeQueue.Count > 0)
             {
                 // The boxes were just ticked: the commit follows as soon as Git has the files.
                 commitWhenIncluded = push;
+                pendingCommitDescription = "preparing files for your commit";
+                EnsureEditorUpdatePump();
                 UpdateCommitSummary();
                 RefreshTopBar();
                 return;
             }
 
+            pendingCommitDescription = push ? "committing and pushing" : "committing";
             string subject = message.Split('\n')[0].Trim();
             string done = (amend ? "Amended \u2018" : "Committed \u2018") + (subject.Length > 60 ? subject.Substring(0, 57) + "\u2026" : subject) + "\u2019" +
                           (push ? " and pushed" : string.Empty);
@@ -175,6 +179,8 @@ namespace Orbiters.UnitGit.Editor
                 },
                 result =>
                 {
+                    pendingCommitDescription = null;
+                    commitIssue = result != null && result.Success ? null : "Commit did not finish successfully: " + UnitGitRedaction.Redact(result?.Message ?? "No result from Git.");
                     if (result != null && result.Success)
                     {
                         if (commitMessage.Trim() == message)

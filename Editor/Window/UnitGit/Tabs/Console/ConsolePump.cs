@@ -54,6 +54,7 @@ namespace Orbiters.UnitGit.Editor
 
         private void DrainEditorQueues()
         {
+            UpdateCommitSummary();
             PollDiffRead();
             PollCommitDetails();
             PollPromptRead();
@@ -74,7 +75,7 @@ namespace Orbiters.UnitGit.Editor
                     break;
             }
 
-            if (!busy && !refreshingSnapshot && !diffRead.IsBusy && !detailsRead.IsBusy && !promptRead.IsBusy && pendingConsoleLines.IsEmpty && pendingMainThreadActions.IsEmpty)
+            if (!busy && !includeRunning && includeQueue.Count == 0 && commitWhenIncluded == null && !refreshingSnapshot && !diffRead.IsBusy && !detailsRead.IsBusy && !promptRead.IsBusy && pendingConsoleLines.IsEmpty && pendingMainThreadActions.IsEmpty)
             {
                 editorUpdatePumpActive = false;
                 EditorApplication.update -= DrainEditorQueues;

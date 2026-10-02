@@ -24,10 +24,14 @@ namespace Orbiters.UnitGit.Editor
         private readonly Dictionary<string, bool> pendingInclude = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly List<(List<string> paths, bool include)> includeQueue = new List<(List<string> paths, bool include)>();
         private bool includeRunning;
+        private int includeGeneration;
         private int includeRunningCount;
         private bool includeRunningAdds;
         // Commit (true: and push) clicked while Git was still including files: it runs as soon as they are in.
         private bool? commitWhenIncluded;
+        private double includeStarted;
+        private string includePaths;
+        private Label commitProgressLabel;
         private string changeFilter = string.Empty;
         private string changeAnchorPath = string.Empty;
         private List<ChangeRow> changeRows = new List<ChangeRow>();
@@ -466,15 +470,20 @@ namespace Orbiters.UnitGit.Editor
         {
             if (includeRunning || includeQueue.Count == 0) return;
             includeRunning = true;
+            int generation = includeGeneration;
             var batch = includeQueue.ToList();
             includeQueue.Clear();
             includeRunningCount = batch.Sum(item => item.paths.Count);
             includeRunningAdds = batch.All(item => item.include);
+            includeStarted = EditorApplication.timeSinceStartup;
+            includePaths = string.Join("\n", batch.SelectMany(item => item.paths).Take(8));
+            if (includeRunningCount > 8) includePaths += "\n…and " + (includeRunningCount - 8) + " more files";
             UpdateCommitSummary();
             string root = gitService.ProjectRoot;
             Task.Run(() =>
                 {
                     var service = new UnitGitService(root);
+                    service.ProcessLogReceived = line => QueueConsoleLine("prepare commit", line);
                     GitCommandResult last = null;
                     foreach (var (paths, include) in batch)
                     {
@@ -485,6 +494,7 @@ namespace Orbiters.UnitGit.Editor
                 })
                 .ContinueWith(task => QueueMainThreadAction(() =>
                 {
+                    if (this == null || generation != includeGeneration) return;
                     includeRunning = false;
                     includeRunningCount = 0;
                     var result = task.Status == TaskStatus.RanToCompletion ? task.Result : null;
@@ -494,6 +504,9 @@ namespace Orbiters.UnitGit.Editor
                         pendingInclude.Clear();
                         includeQueue.Clear();
                         string reason = UnitGitRedaction.Redact(result?.Message ?? task.Exception?.GetBaseException().Message ?? "unknown error");
+                        commitIssue = "Could not prepare the commit. " + reason;
+                        pendingCommitDescription = null;
+                        AppendConsole("prepare commit", reason);
                         ShowToast("Could not update the files to commit" + (commitWhenIncluded != null ? ", so nothing was committed" : string.Empty) + ": " + reason,
                             error: true, "Console", () => SetActiveTab(UnitGitTab.Console));
                         commitWhenIncluded = null;
@@ -734,6 +747,8 @@ namespace Orbiters.UnitGit.Editor
                 }
             }, TrickleDown.TrickleDown);
             panel.Add(message);
+            commitProgressLabel = UnitGitUi.Text(string.Empty, "unitgit-commit-progress");
+            panel.Add(commitProgressLabel);
 
             var actions = new VisualElement();
             actions.AddToClassList("unitgit-local-commit-actions");
@@ -768,10 +783,18 @@ namespace Orbiters.UnitGit.Editor
             if (commitSummaryLabel == null || snapshot == null) return;
             int included = IncludedCount();
             int working = includeRunningCount + includeQueue.Sum(item => item.paths.Count);
-            commitSummaryLabel.text = commitWhenIncluded != null ? "Committing once " + working + (working == 1 ? " file is" : " files are") + " in…"
+            commitSummaryLabel.text = commitWhenIncluded != null ? "Preparing commit…"
                 : includeRunning ? (includeRunningAdds ? "Including " : "Updating ") + working + (working == 1 ? " file…" : " files…")
                 : included + " of " + snapshot.Changes.Count + " included";
             commitSummaryLabel.EnableInClassList("unitgit-local-commit-summary--working", includeRunning || commitWhenIncluded != null);
+            if (commitProgressLabel != null)
+            {
+                string progress = includeRunning ? "Git is " + (includeRunningAdds ? "including" : "updating") + " " + working + " files · " +
+                    (int)(EditorApplication.timeSinceStartup - includeStarted) + "s\n" + includePaths +
+                    (commitWhenIncluded != null ? "\nYour commit will start when this finishes. Git errors appear here; command details are in Console." : "") : commitIssue;
+                commitProgressLabel.text = progress ?? string.Empty;
+                commitProgressLabel.style.display = string.IsNullOrEmpty(progress) ? DisplayStyle.None : DisplayStyle.Flex;
+            }
             // Clickable while Git is still including files: the commit then waits for them.
             bool ready = !busy && commitWhenIncluded == null && (included > 0 || commitAmend);
             commitButton?.SetEnabled(ready);

@@ -289,6 +289,8 @@
     background-color: var(--ug-surface);
 }
 
+.unitgit-commit-progress { white-space: normal; flex-shrink: 0; font-size: 11px; color: #e0c491; background-color: #302d26; border-radius: 8px; padding: 8px 10px; margin: 4px 0; }
+
 .unitgit-local-commit-message {
     margin: 0;
     min-height: 46px;
