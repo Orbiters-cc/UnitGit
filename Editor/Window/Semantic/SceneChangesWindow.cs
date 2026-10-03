@@ -56,7 +56,7 @@ namespace Orbiters.UnitGit.Editor
                 {
                     var view = new SemanticDiffView();
                     content.Add(view);
-                    view.Load("commit|" + hash + "|" + file, () => Show(repo, hash + "^:" + file), () => Show(repo, hash + ":" + file), "Before this commit", "After");
+                    view.Load("commit|" + repo + "|" + hash + "|" + file, () => Show(repo, hash + "^:" + file), () => Show(repo, hash + ":" + file), "Before this commit", "After", file);
                     return;
                 }
                 var model = new ModelCompareView("Before this commit", "After");

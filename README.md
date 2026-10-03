@@ -1,5 +1,11 @@
 # Unit Git
 
+## 0.2.4 — 2026-10-03
+
+- Show before-and-after material spheres in Scene view comparisons alongside the material property diff.
+- Import temporary material revisions without object-name/filename warnings and preserve the original material names.
+- Include the previously unpushed commit workflow fixes for avatar work.
+
 Unit Git is a Unity editor window for working with the Git repository at the root of the current Unity project.
 
 Open it from `Tools > Orbiters > Unit Git`.

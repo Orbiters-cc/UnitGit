@@ -148,7 +148,7 @@ namespace Orbiters.UnitGit.Editor
                     return result.Success ? result.StandardOutput : string.Empty;
                 },
                 () => File.Exists(full) ? File.ReadAllText(full) : string.Empty,
-                "Repository", "Current version");
+                "Repository", "Current version", path);
             return view;
         }
 

@@ -26,6 +26,8 @@ namespace Orbiters.UnitGit.Editor
         private static readonly HashSet<SemanticChangeSet> Animated = new HashSet<SemanticChangeSet>();
 
         private readonly VisualElement header, list;
+        private readonly ScrollView scroll;
+        private MaterialCompareView materials;
         private readonly Label summary;
         private readonly TextField filter;
         private string key = string.Empty;
@@ -64,7 +66,7 @@ namespace Orbiters.UnitGit.Editor
             header.Add(expand);
             header.Add(collapse);
 
-            var scroll = new ScrollView();
+            scroll = new ScrollView();
             scroll.AddToClassList("ugs-scroll");
             Add(scroll);
             list = new VisualElement();
@@ -74,8 +76,20 @@ namespace Orbiters.UnitGit.Editor
         }
 
         /// <summary>Compares the two texts in the background. <paramref name="cacheKey"/> names these exact versions.</summary>
-        public void Load(string cacheKey, Func<string> readBefore, Func<string> readAfter, string beforeLabel, string afterLabel)
+        public void Load(string cacheKey, Func<string> readBefore, Func<string> readAfter, string beforeLabel, string afterLabel, string assetPath = null)
         {
+            materials?.RemoveFromHierarchy();
+            materials = null;
+            if (string.Equals(System.IO.Path.GetExtension(assetPath), ".mat", StringComparison.OrdinalIgnoreCase))
+            {
+                // Both consumers share each Git read, including when they start on different worker threads.
+                var before = new Lazy<string>(readBefore);
+                var after = new Lazy<string>(readAfter);
+                readBefore = () => before.Value;
+                readAfter = () => after.Value;
+                materials = new MaterialCompareView(assetPath, readBefore, readAfter, beforeLabel, afterLabel);
+                scroll.Insert(0, materials);
+            }
             key = cacheKey ?? string.Empty;
             beforeTitle = beforeLabel;
             afterTitle = afterLabel;
