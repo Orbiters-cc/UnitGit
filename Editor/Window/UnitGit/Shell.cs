@@ -48,11 +48,16 @@ namespace Orbiters.UnitGit.Editor
             UpdateTopBar();
         }
 
-        // JetBrains' Git shortcuts: Ctrl+K commit, Ctrl+Shift+K push, Ctrl+T update, F5 refresh.
+        // JetBrains' Git shortcuts: Ctrl+K commit, Ctrl+Shift+K push, Ctrl+T update, Ctrl+Alt+A add, F5 refresh.
         private void OnShortcut(KeyDownEvent evt)
         {
             bool command = evt.ctrlKey || evt.commandKey;
-            if (command && evt.keyCode == KeyCode.K && evt.shiftKey) PushCurrentBranch();
+            if (command && evt.altKey && evt.keyCode == KeyCode.A)
+            {
+                if (activeTab != UnitGitTab.LocalChanges) return;
+                AddSelectedUnversioned();
+            }
+            else if (command && evt.keyCode == KeyCode.K && evt.shiftKey) PushCurrentBranch();
             else if (command && evt.keyCode == KeyCode.K)
             {
                 if (activeTab != UnitGitTab.LocalChanges) SetActiveTab(UnitGitTab.LocalChanges);

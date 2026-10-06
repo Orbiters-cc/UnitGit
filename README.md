@@ -1,5 +1,13 @@
 # Unit Git
 
+## 0.2.5 — 2026-10-07
+
+- Changes: **Add** in the toolbar (or Ctrl+Alt+A, as in JetBrains IDEs) adds the selected unversioned files to Git; the
+  right-click menu has "Add to Git" too.
+- The right-click menu opens on release: opened on press, Windows took the release as a click on its first item
+  ("Include in commit"), which added every selected file without being chosen.
+- `UnitGitCommandLog.Completed` reports every command Unit Git runs with its output (Orbiters Logger shows them).
+
 ## 0.2.4 — 2026-10-03
 
 - Show before-and-after material spheres in Scene view comparisons alongside the material property diff.

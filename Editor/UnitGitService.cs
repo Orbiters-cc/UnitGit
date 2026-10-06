@@ -2451,6 +2451,7 @@ namespace Orbiters.UnitGit.Editor
             var result = new GitCommandResult();
             var output = new StringBuilder();
             var error = new StringBuilder();
+            var started = DateTime.UtcNow;
 
             try
             {
@@ -2514,6 +2515,22 @@ namespace Orbiters.UnitGit.Editor
             result.StandardError = result.TimedOut
                 ? timeoutMessage
                 : error.ToString();
+            if (UnitGitCommandLog.HasListeners)
+            {
+                var finished = DateTime.UtcNow;
+                UnitGitCommandLog.Raise(new UnitGitCommandRecord
+                {
+                    CommandLine = UnitGitRedaction.Redact(FormatCommandLine(fileName, arguments)),
+                    WorkingDirectory = workingDirectory ?? string.Empty,
+                    ExitCode = result.ExitCode,
+                    TimedOut = result.TimedOut,
+                    StandardOutput = UnitGitRedaction.Redact(result.StandardOutput),
+                    StandardError = UnitGitRedaction.Redact(result.StandardError),
+                    Milliseconds = (finished - started).TotalMilliseconds,
+                    FinishedUtc = finished
+                });
+            }
+
             return result;
         }
 

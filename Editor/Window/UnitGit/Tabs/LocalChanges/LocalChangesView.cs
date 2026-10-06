@@ -79,6 +79,9 @@ namespace Orbiters.UnitGit.Editor
 
             var toolbar = new VisualElement();
             toolbar.AddToClassList("ug-toolbar");
+            addButton = UnitGitUi.Pill("Add", AddSelectedUnversioned, null, null, "Add the selected unversioned files to Git (Ctrl+Alt+A)");
+            addButton.AddToClassList("unitgit-add-button");
+            toolbar.Add(addButton);
             toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.Rollback, "Rollback: discard the changes of the selected files", RollbackSelectedChanges));
             toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.Shelve, "Shelve every change (set it aside)", ShelveAll));
             toolbar.Add(UnitGitUi.Separator());
@@ -219,6 +222,7 @@ namespace Orbiters.UnitGit.Editor
         private void RefreshChangesList()
         {
             if (localChangesListRoot == null || snapshot == null) return;
+            UpdateAddButton();
             var scroll = changesListView?.Q<ScrollView>();
             var offset = scroll != null ? scroll.scrollOffset : Vector2.zero;
             localChangesListRoot.Clear();
@@ -381,7 +385,14 @@ namespace Orbiters.UnitGit.Editor
                     SelectChange(change, evt.shiftKey, evt.ctrlKey || evt.commandKey);
                     selectedOnDown = true;
                 }
-                if (evt.button == 1) ShowChangeContextMenu(change);
+            }, TrickleDown.TrickleDown);
+            // The menu opens on release: opened on press, Windows takes the right button's release as a click on the
+            // item under the cursor, which "included" every selected file without the user choosing it.
+            element.RegisterCallback<PointerUpEvent>(evt =>
+            {
+                if (evt.button != 1) return;
+                evt.StopPropagation();
+                ShowChangeContextMenu(change);
             }, TrickleDown.TrickleDown);
             element.clicked += () =>
             {
@@ -583,8 +594,34 @@ namespace Orbiters.UnitGit.Editor
             RebuildLocalDiffPane();
         }
 
+        private Button addButton;
+
+        // Ctrl+Alt+A, as in JetBrains IDEs: the selected unversioned files go to Git (and into the commit).
+        internal void AddSelectedUnversioned()
+        {
+            var unversioned = SelectedChanges().Where(change => change.IsUntracked && !IsIncluded(change, out _)).ToList();
+            if (unversioned.Count == 0)
+            {
+                ShowToast("Select unversioned files to add");
+                return;
+            }
+
+            SetIncluded(unversioned, true);
+            ShowToast("Added " + unversioned.Count + (unversioned.Count == 1 ? " file" : " files") + " to Git");
+            UpdateAddButton();
+        }
+
+        private void UpdateAddButton()
+        {
+            if (addButton == null) return;
+            int count = SelectedChanges().Count(change => change.IsUntracked && !IsIncluded(change, out _));
+            addButton.SetEnabled(count > 0);
+            UnitGitUi.SetText(addButton, count > 1 ? "Add " + count : "Add");
+        }
+
         private void UpdateLocalChangeSelectionState()
         {
+            UpdateAddButton();
             if (localChangesListRoot == null)
             {
                 return;
@@ -645,6 +682,9 @@ namespace Orbiters.UnitGit.Editor
             string what = chosen.Count == 1 ? "‘" + GetFileLeaf(chosen[0].Path) + "’" : chosen.Count + " files";
             var menu = new GenericMenu();
             bool allIncluded = chosen.All(change => IsIncluded(change, out _));
+            var unversioned = chosen.Where(change => change.IsUntracked && !IsIncluded(change, out _)).ToList();
+            if (unversioned.Count > 0)
+                menu.AddItem(new GUIContent("Add to Git	Ctrl+Alt+A"), false, AddSelectedUnversioned);
             menu.AddItem(new GUIContent(allIncluded ? "Exclude from commit" : "Include in commit"), false, () => SetIncluded(chosen, !allIncluded));
             menu.AddSeparator(string.Empty);
             menu.AddItem(new GUIContent("Rollback " + what + "…"), false, RollbackSelectedChanges);
