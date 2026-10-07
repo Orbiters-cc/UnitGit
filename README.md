@@ -1,5 +1,9 @@
 # Unit Git
 
+## 0.2.6 — 2026-10-07
+
+- VRChat uploads: no error when the avatar shown in the SDK panel was destroyed (a build copy, a test avatar); the release falls back to "Avatar" as its name.
+
 ## 0.2.5 — 2026-10-07
 
 - Changes: **Add** in the toolbar (or Ctrl+Alt+A, as in JetBrains IDEs) adds the selected unversioned files to Git; the

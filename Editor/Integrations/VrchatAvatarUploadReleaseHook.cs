@@ -160,8 +160,26 @@ namespace Orbiters.UnitGit.Editor
                 return currentContext;
             }
 
-            currentContext = CaptureContext(attachedBuilder != null ? attachedBuilder.SelectedAvatar : null);
+            currentContext = CaptureContext(SelectedAvatar());
             return currentContext;
+        }
+
+        // The SDK's getter throws once the avatar it shows was destroyed (a build copy or a test avatar it picked up).
+        private static GameObject SelectedAvatar()
+        {
+            if (attachedBuilder == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                return attachedBuilder.SelectedAvatar;
+            }
+            catch (MissingReferenceException)
+            {
+                return null;
+            }
         }
 
         private static AvatarUploadContext CaptureContext(GameObject avatarObject)
