@@ -1,5 +1,12 @@
 # Unit Git
 
+## 0.2.7 — 2026-10-07
+
+- The history summary other tools show (My Avatar's Versioning section) reads Git once when several ask together, e.g.
+  an avatar shown in two Inspectors: every Git command of each refresh used to run twice.
+- Hide Release Row tells other tools about the change on Unity's main thread: their refresh used to start from the
+  background thread that wrote the release list.
+
 ## 0.2.6 — 2026-10-07
 
 - VRChat uploads: no error when the avatar shown in the SDK panel was destroyed (a build copy, a test avatar); the release falls back to "Avatar" as its name.

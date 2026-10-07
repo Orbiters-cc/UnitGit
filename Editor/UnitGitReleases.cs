@@ -99,8 +99,21 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public static event Action ChangedExternally;
 
+        // Captured on the main thread at load: handlers (Unit Git windows, My Avatar's summary) always run there, also when
+        // a window action wrote the catalog from a worker thread.
+        private static SynchronizationContext mainThread;
+
+        [UnityEditor.InitializeOnLoadMethod]
+        private static void CaptureMainThread() => mainThread = SynchronizationContext.Current;
+
         private static void RaiseChangedExternally()
         {
+            if (mainThread != null && !UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread())
+            {
+                mainThread.Post(_ => RaiseChangedExternally(), null);
+                return;
+            }
+
             try
             {
                 ChangedExternally?.Invoke();
