@@ -49,7 +49,9 @@ namespace Orbiters.UnitGit.Editor
         CollapseUnchanged,
         FoldUp,
         FoldDown,
-        Undo
+        Undo,
+        Storage,
+        OpenExternal
     }
 
     /// <summary>
@@ -317,6 +319,18 @@ namespace Orbiters.UnitGit.Editor
                     break;
                 case UnitGitIconKind.Calendar:
                     RoundRect(4f, 5.5f, 16f, 14.5f, 2.5f); Line(P(4f, 10f), P(20f, 10f)); Line(P(8.5f, 3.5f), P(8.5f, 7f)); Line(P(15.5f, 3.5f), P(15.5f, 7f));
+                    break;
+                // A database: three stacked discs.
+                case UnitGitIconKind.Storage:
+                    p.BeginPath(); p.MoveTo(P(5f, 6f)); p.BezierCurveTo(P(5f, 2.7f), P(19f, 2.7f), P(19f, 6f)); p.BezierCurveTo(P(19f, 9.3f), P(5f, 9.3f), P(5f, 6f)); p.Stroke();
+                    Line(P(5f, 6f), P(5f, 18f)); Line(P(19f, 6f), P(19f, 18f));
+                    p.BeginPath(); p.MoveTo(P(5f, 12f)); p.BezierCurveTo(P(5f, 15.3f), P(19f, 15.3f), P(19f, 12f)); p.Stroke();
+                    p.BeginPath(); p.MoveTo(P(5f, 18f)); p.BezierCurveTo(P(5f, 21.3f), P(19f, 21.3f), P(19f, 18f)); p.Stroke();
+                    break;
+                // A box with an arrow leaving it by its top right corner: opens in the browser.
+                case UnitGitIconKind.OpenExternal:
+                    Line(P(11f, 5.5f), P(6.5f, 5.5f), P(5f, 7f), P(5f, 17.5f), P(6.5f, 19f), P(17f, 19f), P(18.5f, 17.5f), P(18.5f, 13f));
+                    Line(P(11f, 13f), P(19.5f, 4.5f)); Line(P(14f, 4.5f), P(19.5f, 4.5f), P(19.5f, 10f));
                     break;
             }
         }

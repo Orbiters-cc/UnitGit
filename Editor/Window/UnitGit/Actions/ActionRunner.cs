@@ -130,6 +130,8 @@ namespace Orbiters.UnitGit.Editor
                 AppendConsole(label, "completion callback failed: " + ex.Message);
             }
 
+            // Commits, fetches, merges, gc… change the size of the Git data.
+            gitStorageStale = true;
             RefreshSnapshot();
         }
     }

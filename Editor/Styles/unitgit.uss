@@ -1921,7 +1921,6 @@
 .unitgit-release-card {
     margin: 10px;
     padding: 12px 14px;
-    border-width: 1px;
     border-radius: 14px;
     background-color: var(--ug-card);
 }
@@ -1942,7 +1941,6 @@
     height: 20px;
     margin-left: 8px;
     padding: 0 8px;
-    border-width: 1px;
     border-radius: 10px;
     font-size: 11px;
     -unity-font-style: bold;
@@ -1972,23 +1970,8 @@
     height: 150px;
 }
 
-.unitgit-release-meta-row {
-    flex-direction: row;
-    margin-top: 6px;
-}
-
-.unitgit-release-meta-key {
-    width: 84px;
-    flex-shrink: 0;
-    color: var(--ug-text-3);
-    font-size: 11px;
-}
-
-.unitgit-release-meta-value {
-    flex-shrink: 1;
-    color: #d8d8d8;
-    font-size: 11px;
-    white-space: normal;
+.unitgit-release-meta {
+    margin-top: 8px;
 }
 
 .unitgit-release-changelog-header {
@@ -2001,6 +1984,229 @@
     margin: 0 14px 14px 14px;
     color: var(--ug-text-2);
     white-space: normal;
+}
+
+/* Key/value rows: the key keeps its width and is never covered; the value wraps, or ends in an ellipsis for IDs and
+   file names. Narrow lists put each value under its key. */
+
+.ug-kv {
+    flex-direction: row;
+    align-items: flex-start;
+    min-height: 20px;
+    padding: 3px 0;
+}
+
+.ug-kv__key {
+    width: 92px;
+    flex-shrink: 0;
+    margin: 0 10px 0 0;
+    padding: 0;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: normal;
+}
+
+.ug-kv__value {
+    flex-grow: 1;
+    flex-shrink: 1;
+    flex-basis: 0;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    color: #d8d8d8;
+    font-size: 11px;
+    white-space: normal;
+}
+
+.ug-kv__value--ellipsis {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-kv__value--link {
+    color: #6aa7ff;
+}
+
+.ug-kv__value--link:hover {
+    color: #9cc4ff;
+}
+
+.ug-kv--id {
+    align-items: center;
+    padding: 0;
+}
+
+.ug-kv--id .ug-kv__value {
+    -unity-font-style: bold;
+    color: #d0d0d0;
+}
+
+.ug-kv--id .ug-icon-button--small {
+    margin: 0 -4px 0 2px;
+}
+
+.ug-kv-list--narrow .ug-kv {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.ug-kv-list--narrow .ug-kv__key {
+    width: auto;
+    margin: 0 0 1px 0;
+}
+
+.ug-kv-list--narrow .ug-kv--id {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 3px 0;
+}
+
+.ug-kv-list--narrow .ug-kv--id .ug-kv__key {
+    width: 100%;
+}
+
+/* ---- VRChat avatar upload ---------------------------------------------------------------------------- */
+
+.ug-upload {
+    margin: 10px 10px 14px 10px;
+    opacity: 1;
+    translate: 0 0;
+    transition-property: opacity, translate;
+    transition-duration: 0.22s, 0.3s;
+    transition-timing-function: ease-out, ease-out-cubic;
+}
+
+.ug-upload--enter {
+    opacity: 0;
+    translate: 0 6px;
+}
+
+.ug-upload__headline {
+    flex-direction: row;
+    align-items: center;
+    height: 24px;
+    margin: 0 2px 8px 2px;
+}
+
+.ug-upload__dot {
+    width: 8px;
+    height: 8px;
+    margin-right: 8px;
+    border-radius: 4px;
+    background-color: var(--ug-accent);
+}
+
+.ug-upload__headline-text {
+    color: #f4f4f4;
+    font-size: 13px;
+    -unity-font-style: bold;
+    white-space: nowrap;
+}
+
+.ug-upload__when {
+    margin-left: 6px;
+}
+
+.ug-upload__card {
+    scale: 1 1;
+    transition-property: scale, translate;
+    transition-duration: 0.18s, 0.18s;
+    transition-timing-function: ease-out-back, ease-out;
+}
+
+.ug-upload--enter .ug-upload__card {
+    scale: 0.94 0.94;
+}
+
+.ug-upload__card--link:hover {
+    scale: 1.025 1.025;
+    translate: 0 -2px;
+}
+
+.ug-upload__card--link.ug-pressed {
+    scale: 0.97 0.97;
+    translate: 0 0;
+}
+
+.ug-upload__actions {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 10px;
+}
+
+.ug-upload__actions .ug-button {
+    height: 30px;
+    min-height: 30px;
+    border-radius: 15px;
+}
+
+.ug-upload__open {
+    flex-grow: 2;
+    flex-basis: 0;
+    margin-left: 0;
+}
+
+.ug-upload__copy {
+    flex-grow: 1;
+    flex-basis: 0;
+    margin-left: 8px;
+}
+
+.ug-upload__tiles {
+    flex-direction: row;
+    margin: 10px -3px 0 -3px;
+}
+
+.ug-upload__tile {
+    flex-grow: 1;
+    flex-basis: 0;
+    min-width: 0;
+    margin: 0 3px;
+    padding: 8px 10px 9px 10px;
+    border-radius: 12px;
+    background-color: var(--ug-card);
+}
+
+.ug-upload__tile-label {
+    color: var(--ug-text-3);
+    font-size: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-upload__tile-value {
+    margin-top: 2px;
+    color: #f4f4f4;
+    font-size: 14px;
+    -unity-font-style: bold;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-upload__tile-detail {
+    margin-top: 1px;
+    color: var(--ug-text-2);
+    font-size: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-upload__group-title {
+    margin: 14px 4px 6px 4px;
+    color: var(--ug-text-2);
+    font-size: 11px;
+    -unity-font-style: bold;
+}
+
+.ug-upload__group {
+    padding: 7px 12px;
+    border-radius: 12px;
+    background-color: var(--ug-card);
 }
 
 .unitgit-changes-pane--tall .unitgit-local-commit-message {

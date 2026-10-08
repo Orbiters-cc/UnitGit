@@ -234,6 +234,7 @@ namespace Orbiters.UnitGit.Editor
                 snapshot = task.Result.Snapshot;
                 ReconcileSnapshotSelection();
                 ReconcilePendingInclude();
+                if (snapshot.HasRepository) RequestGitStorage(false);
             }
 
             bool preserveLocalView = activeTab == UnitGitTab.LocalChanges && localChangesListRoot != null &&

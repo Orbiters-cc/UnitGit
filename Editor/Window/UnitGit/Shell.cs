@@ -64,7 +64,7 @@ namespace Orbiters.UnitGit.Editor
                 rootVisualElement.schedule.Execute(() => contentRoot?.Q<TextField>(className: "unitgit-local-commit-message")?.Focus()).StartingIn(20);
             }
             else if (command && evt.keyCode == KeyCode.T) PullFastForward();
-            else if (evt.keyCode == KeyCode.F5) RefreshSnapshot();
+            else if (evt.keyCode == KeyCode.F5) RefreshAll();
             else return;
             evt.StopPropagation();
         }
@@ -104,6 +104,8 @@ namespace Orbiters.UnitGit.Editor
             statusArea.Add(statusText);
             bar.Add(statusArea);
 
+            bar.Add(BuildStorageWidget());
+
             branchWidget = new Button { tooltip = "Branches: checkout, create, merge…" };
             branchWidget.AddToClassList("ug-branch-widget");
             branchWidget.Add(new UnitGitIconElement(UnitGitIconKind.Branch));
@@ -129,7 +131,7 @@ namespace Orbiters.UnitGit.Editor
             pushButton = UnitGitUi.Icon(UnitGitIconKind.Push, "Push the current branch (Ctrl+Shift+K)", PushCurrentBranch);
             actions.Add(pushButton);
             actions.Add(UnitGitUi.Icon(UnitGitIconKind.Fetch, "Fetch from every remote", Fetch));
-            actions.Add(UnitGitUi.Icon(UnitGitIconKind.Refresh, "Refresh (F5)", RefreshSnapshot));
+            actions.Add(UnitGitUi.Icon(UnitGitIconKind.Refresh, "Refresh (F5)", RefreshAll));
             actions.Add(UnitGitUi.Separator());
             settingsButton = UnitGitUi.Icon(UnitGitIconKind.Settings, "Settings", () => SetActiveTab(activeTab == UnitGitTab.Settings ? UnitGitTab.Log : UnitGitTab.Settings));
             actions.Add(settingsButton);
@@ -158,6 +160,7 @@ namespace Orbiters.UnitGit.Editor
             settingsButton.EnableInClassList("ug-icon-button--on", activeTab == UnitGitTab.Settings);
 
             branchWidget.style.display = ready ? DisplayStyle.Flex : DisplayStyle.None;
+            storageWidget.style.display = ready ? DisplayStyle.Flex : DisplayStyle.None;
             if (ready)
             {
                 string branch = string.IsNullOrWhiteSpace(snapshot.CurrentBranch) ? "detached HEAD" : snapshot.CurrentBranch;

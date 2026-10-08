@@ -1,5 +1,20 @@
 # Unit Git
 
+## 0.2.8 — 2026-10-08
+
+- **VRChat uploads** in the Log show the avatar as VRChat's menu shows it: Orbiters Toolkit's avatar card (the one My
+  Avatar uses, with the badges of every platform uploaded so far) on its stage, lit by the thumbnail's colours. A click
+  on the card or **Open on VRChat** opens the avatar's page on vrchat.com; **Copy ID** and the copy buttons beside the
+  avatar, blueprint and commit IDs copy them. Under it: when it was uploaded, how long the upload took and the platform,
+  then the avatar (scene and prefab link to the Project window), the upload (start and finish in local time, the
+  bundle), the build (Unity and SDK versions) and the commit.
+- Release details no longer cut their labels: long names such as "VRChat Avatars SDK" keep their column, values wrap
+  (IDs and file names end in an ellipsis, with the full text on hover) and a narrow pane puts values under their names.
+- The top bar shows the disk space of the project's local Git data, e.g. **Git 1.2 GB** (the `.git` folder: history,
+  Git LFS's copies and Git's bookkeeping, not the working files), with the split on hover. It is measured in the
+  background after refreshes, at once after a commit, fetch or other Git action, F5 or a click on it.
+- Requires Orbiters Toolkit 0.3.18.
+
 ## 0.2.7 — 2026-10-07
 
 - The history summary other tools show (My Avatar's Versioning section) reads Git once when several ask together, e.g.
@@ -34,7 +49,7 @@ Open it from `Tools > Orbiters > Unit Git`.
 The window follows JetBrains IDEs' Git tool window, in the style of the other Orbiters tools.
 
 - **Top bar**: the tabs (Changes with its count, Log, Shelf, Conflicts when needed, Backups, Console), what is running,
-  the **branch widget** (current branch, commits to push and pull; click for every branch with Checkout, New branch
+  the size of the local Git data, the **branch widget** (current branch, commits to push and pull; click for every branch with Checkout, New branch
   from, Merge into current, Update and Delete) and Update (pull, fast-forward only), Push, Fetch, Refresh and Settings.
   Shortcuts: **Ctrl+K** commit, **Ctrl+Shift+K** push, **Ctrl+T** update, **F5** refresh. Results show as short
   notifications; failures stay longer and lead to the Console.

@@ -157,7 +157,7 @@ namespace Orbiters.UnitGit.Editor
             var date = new Label(backup.Created.ToString("dddd d MMMM yyyy · HH:mm", CultureInfo.CurrentCulture));
             date.AddToClassList("ugb-row__date");
             texts.Add(date);
-            var parts = new List<string> { Relative(backup.Created), UnitGitService.FormatBytes(backup.Bytes) };
+            var parts = new List<string> { UnitGitTime.Relative(backup.Created), UnitGitService.FormatBytes(backup.Bytes) };
             if (backup.Branches > 0) parts.Add(backup.Branches + " branch" + (backup.Branches == 1 ? "" : "es"));
             if (backup.Healthy == false) parts.Add("damaged");
             var meta = new Label(string.Join(" · ", parts)) { tooltip = backup.Path };
@@ -231,17 +231,6 @@ namespace Orbiters.UnitGit.Editor
         {
             string attributes = Path.Combine(root, ".gitattributes");
             return File.Exists(attributes) && File.ReadAllText(attributes).IndexOf("filter=lfs", StringComparison.Ordinal) >= 0;
-        }
-
-        private static string Relative(DateTime time)
-        {
-            var span = DateTime.Now - time;
-            if (span.TotalMinutes < 1) return "just now";
-            if (span.TotalHours < 1) return (int)span.TotalMinutes + " min ago";
-            if (span.TotalDays < 1) return (int)span.TotalHours + " h ago";
-            if (span.TotalDays < 2) return "yesterday";
-            if (span.TotalDays < 30) return (int)span.TotalDays + " days ago";
-            return time.ToString("d", CultureInfo.CurrentCulture);
         }
     }
 }

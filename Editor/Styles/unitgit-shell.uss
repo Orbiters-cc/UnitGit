@@ -641,6 +641,61 @@
     --icon-width: 2.4;
 }
 
+.ug-storage {
+    height: 30px;
+    min-height: 30px;
+    margin: 0 6px 0 0;
+    padding: 0 10px 0 8px;
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    border-width: 0;
+    border-radius: 9px;
+    background-color: rgba(0, 0, 0, 0);
+    background-image: none;
+    scale: 1 1;
+    opacity: 1;
+    transition-property: background-color, scale, opacity;
+    transition-duration: 0.12s, 0.16s, 0.2s;
+    transition-timing-function: ease-out, ease-out-back, ease-out;
+}
+
+.ug-storage:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+.ug-storage.ug-pressed {
+    scale: 0.95 0.95;
+    background-color: rgba(255, 255, 255, 0.09);
+}
+
+.ug-storage--measuring {
+    opacity: 0.55;
+}
+
+.ug-storage .unitgit-icon {
+    width: 14px;
+    height: 14px;
+    margin-right: 6px;
+    --icon-color: #8c8c8c;
+    --icon-width: 2;
+}
+
+.ug-storage:hover .unitgit-icon {
+    --icon-color: #d6d6d6;
+}
+
+.ug-storage__label {
+    color: #b0b0b0;
+    font-size: 11px;
+    -unity-font-style: bold;
+    white-space: nowrap;
+}
+
+.ug-storage:hover .ug-storage__label {
+    color: #e6e6e6;
+}
+
 .ug-topbar__actions {
     flex-direction: row;
     align-items: center;

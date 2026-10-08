@@ -105,7 +105,7 @@ namespace Orbiters.UnitGit.Editor
             EditorApplication.projectChanged += QueueRefreshFromEditorEvent;
             EditorApplication.focusChanged += OnEditorFocusChanged;
             EditorSceneManager.sceneSaved += OnSceneSaved;
-            UnitGitReleases.ChangedExternally += QueueRefreshFromEditorEvent;
+            UnitGitReleases.ChangedExternally += OnReleasesChangedExternally;
         }
 
         private void OnDisable()
@@ -117,10 +117,11 @@ namespace Orbiters.UnitGit.Editor
             promptRead.Dispose();
             if (diffFont != null)
                 DestroyImmediate(diffFont);
+            ReleaseThumbnailCacheClear();
             EditorApplication.projectChanged -= QueueRefreshFromEditorEvent;
             EditorApplication.focusChanged -= OnEditorFocusChanged;
             EditorSceneManager.sceneSaved -= OnSceneSaved;
-            UnitGitReleases.ChangedExternally -= QueueRefreshFromEditorEvent;
+            UnitGitReleases.ChangedExternally -= OnReleasesChangedExternally;
             EditorApplication.delayCall -= RunQueuedRefresh;
             EditorApplication.update -= RunQueuedRefresh;
             EditorApplication.update -= RunQueuedLogSearchRefresh;
@@ -144,6 +145,7 @@ namespace Orbiters.UnitGit.Editor
             refreshAgainRequested = false;
             editorUpdatePumpActive = false;
             logSearchRefreshQueued = false;
+            gitStorageMeasuring = false;
             while (pendingConsoleLines.TryDequeue(out _))
             {
             }

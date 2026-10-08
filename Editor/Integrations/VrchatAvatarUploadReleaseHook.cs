@@ -20,8 +20,8 @@ namespace Orbiters.UnitGit.Editor
     [InitializeOnLoad]
     internal static class VrchatAvatarUploadReleaseHook
     {
-        private const string ToolName = "VRChat SDK";
-        private const string ReleaseType = "avatar upload";
+        private const string ToolName = UnitGitAvatarUpload.Tool;
+        private const string ReleaseType = UnitGitAvatarUpload.Type;
         private const string ReleaseAssetsFolderName = ".unitgit-release-assets";
         private const string AvatarThumbnailAssetsFolderName = "vrchat-avatar-thumbnails";
         private const string BuilderThumbnailPathFieldName = "_newThumbnailImagePath";
@@ -349,18 +349,18 @@ namespace Orbiters.UnitGit.Editor
         private static UnitGitReleaseEntry BuildReleaseEntry(AvatarUploadContext context, string displayName, string platform)
         {
             var fields = new List<UnitGitReleaseField>();
-            AddField(fields, "Avatar ID", context.AvatarId);
-            AddField(fields, "Blueprint ID", context.BlueprintId);
-            AddField(fields, "Platform", platform);
-            AddField(fields, "Build Target", context.BuildTarget);
-            AddField(fields, "Scene", context.ScenePath);
-            AddField(fields, "Avatar Path", FirstNonEmpty(context.PrefabAssetPath, context.AssetPath, context.HierarchyPath));
-            AddField(fields, "Unity", context.UnityVersion);
-            AddField(fields, "VRChat Avatars SDK", context.SdkAvatarPackageVersion);
-            AddField(fields, "VRChat Base SDK", context.SdkBasePackageVersion);
-            AddField(fields, "Upload Started", FormatUtc(context.UploadStartedUtc));
-            AddField(fields, "Upload Succeeded", FormatUtc(context.UploadSucceededUtc));
-            AddField(fields, "Bundle", context.BundlePath);
+            AddField(fields, UnitGitAvatarUpload.AvatarIdKey, context.AvatarId);
+            AddField(fields, UnitGitAvatarUpload.BlueprintIdKey, context.BlueprintId);
+            AddField(fields, UnitGitAvatarUpload.PlatformKey, platform);
+            AddField(fields, UnitGitAvatarUpload.BuildTargetKey, context.BuildTarget);
+            AddField(fields, UnitGitAvatarUpload.SceneKey, context.ScenePath);
+            AddField(fields, UnitGitAvatarUpload.AvatarPathKey, FirstNonEmpty(context.PrefabAssetPath, context.AssetPath, context.HierarchyPath));
+            AddField(fields, UnitGitAvatarUpload.UnityKey, context.UnityVersion);
+            AddField(fields, UnitGitAvatarUpload.AvatarsSdkKey, context.SdkAvatarPackageVersion);
+            AddField(fields, UnitGitAvatarUpload.BaseSdkKey, context.SdkBasePackageVersion);
+            AddField(fields, UnitGitAvatarUpload.UploadStartedKey, FormatUtc(context.UploadStartedUtc));
+            AddField(fields, UnitGitAvatarUpload.UploadSucceededKey, FormatUtc(context.UploadSucceededUtc));
+            AddField(fields, UnitGitAvatarUpload.BundleKey, context.BundlePath);
 
             return new UnitGitReleaseEntry
             {
@@ -370,7 +370,7 @@ namespace Orbiters.UnitGit.Editor
                 name = displayName,
                 title = string.IsNullOrWhiteSpace(platform) ? "Avatar upload" : platform + " upload",
                 scope = platform,
-                changelog = "Avatar uploaded with the VRChat SDK.",
+                changelog = UnitGitAvatarUpload.DefaultChangelog,
                 date = DateTime.UtcNow.ToString("o"),
                 author = Environment.UserName,
                 thumbnailPath = context.ThumbnailPath,
