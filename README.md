@@ -1,5 +1,9 @@
 # Unit Git
 
+## 0.2.9 — 2026-10-19
+
+- Requires Orbiters Toolkit 0.4.0.
+
 ## 0.2.8 — 2026-10-08
 
 - **VRChat uploads** in the Log show the avatar as VRChat's menu shows it: Orbiters Toolkit's avatar card (the one My
