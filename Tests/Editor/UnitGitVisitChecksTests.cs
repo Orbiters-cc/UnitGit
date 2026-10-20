@@ -64,7 +64,8 @@ namespace Orbiters.UnitGit.Editor.Tests
             string changed = UnitGitVisitChecks.ChangedWhileVisitingText(2, 1, "abc1234", "‘main’");
             Assert.That(changed, Does.Contain("2 files changed"));
             Assert.That(changed, Does.Contain("1 new file was made where ‘main’ has its own"));
-            Assert.That(UnitGitVisitChecks.ChangedWhileVisitingText(1, 0, "abc1234", "‘main’"), Does.Not.Contain("new file"));
+            // Without files in the way the text names none (it still says other new files stay).
+            Assert.That(UnitGitVisitChecks.ChangedWhileVisitingText(1, 0, "abc1234", "‘main’"), Does.Not.Contain("made where"));
 
             string ignored = UnitGitVisitChecks.IgnoredInTheWayText(new[] { "Assets/local.cfg" }, "abc1234");
             Assert.That(ignored, Does.Contain("1 ignored file is"));
