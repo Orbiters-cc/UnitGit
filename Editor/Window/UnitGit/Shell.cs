@@ -39,6 +39,7 @@ namespace Orbiters.UnitGit.Editor
             }
 
             rootVisualElement.Add(BuildTopBar());
+            rootVisualElement.Add(BuildVisitBanner());
             contentRoot = new VisualElement();
             contentRoot.AddToClassList("unitgit-content");
             rootVisualElement.Add(contentRoot);
@@ -161,11 +162,14 @@ namespace Orbiters.UnitGit.Editor
 
             branchWidget.style.display = ready ? DisplayStyle.Flex : DisplayStyle.None;
             storageWidget.style.display = ready ? DisplayStyle.Flex : DisplayStyle.None;
+            bool visiting = ready && IsVisiting;
+            branchWidget.EnableInClassList("ug-branch-widget--visiting", visiting);
             if (ready)
             {
-                string branch = string.IsNullOrWhiteSpace(snapshot.CurrentBranch) ? "detached HEAD" : snapshot.CurrentBranch;
+                string branch = visiting ? "Visiting " + snapshot.DetachedCommit.ShortHash
+                    : string.IsNullOrWhiteSpace(snapshot.CurrentBranch) ? "detached HEAD" : snapshot.CurrentBranch;
                 branchName.text = branch;
-                branchWidget.tooltip = branch + (snapshot.Ahead > 0 || snapshot.Behind > 0
+                branchWidget.tooltip = (visiting ? branch + ": no branch is checked out" : branch) + (snapshot.Ahead > 0 || snapshot.Behind > 0
                     ? "  (" + snapshot.Ahead + " to push, " + snapshot.Behind + " to pull)" : string.Empty) + "\nClick for branches: checkout, create, merge…";
                 branchAhead.text = snapshot.Ahead > 0 ? "↑" + snapshot.Ahead : string.Empty;
                 branchAhead.style.display = snapshot.Ahead > 0 ? DisplayStyle.Flex : DisplayStyle.None;
@@ -181,6 +185,7 @@ namespace Orbiters.UnitGit.Editor
             foreach (var button in rootVisualElement.Query<Button>(className: "ug-icon-button").ToList())
                 if (button.parent != null && button.parent.ClassListContains("ug-topbar__actions") && button != settingsButton)
                     button.SetEnabled(ready && !busy && commitWhenIncluded == null);
+            UpdateVisitBanner();
         }
 
         private void RefreshTopBar() => UpdateTopBar();

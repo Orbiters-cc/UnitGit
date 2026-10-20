@@ -24,6 +24,7 @@ namespace Orbiters.UnitGit.Editor
 
             List<UnitGitCommit> selectedCommits = GetSelectedCommitsInLogOrder();
             menu.AddItem(new GUIContent("New Branch from Here…"), false, () => PromptCreateBranchFrom(commit.FullHash));
+            AddVisitItem(menu, commit);
             menu.AddItem(new GUIContent("Cherry-Pick"), false, () => CherryPickCommit(commit));
             menu.AddItem(new GUIContent("Revert Commit"), false, () => RevertCommit(commit));
             menu.AddSeparator(string.Empty);
@@ -45,9 +46,18 @@ namespace Orbiters.UnitGit.Editor
             menu.ShowAsContext();
         }
 
+        // The project as it was at this commit, the later commits kept; the checked-out commit has nothing to visit.
+        private void AddVisitItem(GenericMenu menu, UnitGitCommit commit)
+        {
+            var item = new GUIContent("Visit This Commit", "Check out this commit to look around; every later commit stays on its branch.");
+            if (UnitGitCommitGraph.IsHead(commit.Decorations)) menu.AddDisabledItem(item);
+            else menu.AddItem(item, false, () => VisitCommit(commit));
+        }
+
         // Cherry-pick and revert make a new commit on the current branch; a conflict opens the Conflicts tab.
         private void CherryPickCommit(UnitGitCommit commit)
         {
+            if (RefuseWhileVisiting("a cherry-picked commit")) return;
             RunAction("cherry-pick " + commit.ShortHash, () => gitService.CherryPick(commit.FullHash),
                 result => { if (result != null && !result.Success && HasConflictWork()) SetActiveTab(UnitGitTab.Conflicts); },
                 "Cherry-picking " + commit.ShortHash + "…", "Cherry-picked ‘" + Shorten(commit.Subject, 50) + "’");
@@ -55,6 +65,7 @@ namespace Orbiters.UnitGit.Editor
 
         private void RevertCommit(UnitGitCommit commit)
         {
+            if (RefuseWhileVisiting("a revert commit")) return;
             RunAction("revert " + commit.ShortHash, () => gitService.RevertCommit(commit.FullHash),
                 result => { if (result != null && !result.Success && HasConflictWork()) SetActiveTab(UnitGitTab.Conflicts); },
                 "Reverting " + commit.ShortHash + "…", "Reverted ‘" + Shorten(commit.Subject, 50) + "’");
@@ -76,12 +87,14 @@ namespace Orbiters.UnitGit.Editor
             if (commit != null)
             {
                 menu.AddSeparator(string.Empty);
+                AddVisitItem(menu, commit);
                 menu.AddItem(new GUIContent("Rename Commit"), false, () => PromptRenameCommit(commit));
                 menu.AddItem(new GUIContent("Reset Current Branch to Here..."), false, () => PromptResetCurrentBranch(commit));
                 menu.AddItem(new GUIContent("Copy Hash"), false, () => CopyText("copy hash", commit.FullHash));
             }
             else
             {
+                menu.AddDisabledItem(new GUIContent("Visit This Commit"));
                 menu.AddDisabledItem(new GUIContent("Rename Commit"));
                 menu.AddDisabledItem(new GUIContent("Reset Current Branch to Here..."));
                 menu.AddDisabledItem(new GUIContent("Copy Hash"));

@@ -674,6 +674,12 @@ namespace Orbiters.UnitGit.Editor
                 return Fail("Git was not found on PATH.");
             }
 
+            // A commit made on a detached HEAD (a visited commit) belongs to no branch and leaves the history on the way back.
+            if (service.IsHeadDetached())
+            {
+                return Fail("No branch is checked out (Unit Git is visiting a commit). Go back to a branch, or make one, before recording a checkpoint.");
+            }
+
             return null;
         }
 

@@ -67,6 +67,58 @@ namespace Orbiters.UnitGit.Editor.Tests
         }
 
         [Test]
+        public void ParseBranchesDropsTheDetachedHeadPseudoBranch()
+        {
+            string output =
+                "(HEAD detached at abc1234)\t(HEAD detached at abc1234)\t*\t\tabc1234\n" +
+                "refs/heads/main\tmain\t \torigin/main\tabc2222\n";
+
+            var branches = UnitGitService.ParseBranches(output);
+
+            Assert.That(branches.Select(branch => branch.Name), Is.EqualTo(new[] { "main" }));
+            Assert.That(branches.Any(branch => branch.IsCurrent), Is.False);
+        }
+
+        [Test]
+        public void ParseStatusReportsADetachedHeadWithoutABranch()
+        {
+            UnitGitSnapshot detached = UnitGitService.ParseStatusOutput("## HEAD (no branch)\n M Assets/file.txt\n");
+            Assert.That(detached.IsDetached, Is.True);
+            Assert.That(detached.CurrentBranch, Is.Empty);
+            Assert.That(detached.Upstream, Is.Empty);
+            Assert.That(detached.Changes.Select(change => change.Path), Is.EqualTo(new[] { "Assets/file.txt" }));
+
+            UnitGitSnapshot onBranch = UnitGitService.ParseStatusOutput("## main...origin/main [behind 3]\n");
+            Assert.That(onBranch.IsDetached, Is.False);
+            Assert.That(onBranch.CurrentBranch, Is.EqualTo("main"));
+            Assert.That(onBranch.Behind, Is.EqualTo(3));
+
+            Assert.That(UnitGitService.ParseStatusOutput("## No commits yet on main\n").IsDetached, Is.False);
+        }
+
+        [Test]
+        public void OnlyTheCheckedOutCommitIsHeadNotARemotesDefaultBranch()
+        {
+            Assert.That(UnitGitCommitGraph.IsHead("HEAD -> main, origin/main"), Is.True);
+            Assert.That(UnitGitCommitGraph.IsHead("HEAD"), Is.True);
+            Assert.That(UnitGitCommitGraph.IsHead("HEAD, tag: v1.0"), Is.True);
+            Assert.That(UnitGitCommitGraph.IsHead("origin/main, origin/HEAD"), Is.False);
+            Assert.That(UnitGitCommitGraph.IsHead("tag: HEADLINE, main"), Is.False);
+            Assert.That(UnitGitCommitGraph.IsHead(string.Empty), Is.False);
+        }
+
+        [Test]
+        public void FindShelfMatchesTheWholeMessageOnAnyBranch()
+        {
+            string list = "stash@{0}\x1fOn (no branch): Changed while visiting abc1234 (2026-10-20 12:00:01)\n" +
+                          "stash@{1}\x1fOn main: Before visiting abc1234 (2026-10-20 12:00:00)\n" +
+                          "stash@{2}\x1fOn main: older Before visiting abc1234 (2026-10-20 12:00:00) copy\n";
+            Assert.That(UnitGitService.FindShelfIn(list, "Before visiting abc1234 (2026-10-20 12:00:00)"), Is.EqualTo("stash@{1}"));
+            Assert.That(UnitGitService.FindShelfIn(list, "Before visiting abc1234"), Is.Empty);
+            Assert.That(UnitGitService.FindShelfIn(list, string.Empty), Is.Empty);
+        }
+
+        [Test]
         public void ParseCommitsFiltersBySubjectAuthorHashAndDecorations()
         {
             const string separator = "\x1f";

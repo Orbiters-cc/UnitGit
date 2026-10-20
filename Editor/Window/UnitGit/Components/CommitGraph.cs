@@ -49,7 +49,7 @@ namespace Orbiters.UnitGit.Editor
                 }
                 row.Lane = lane;
                 row.Color = colors[lane];
-                row.Head = commit.Decorations != null && commit.Decorations.IndexOf("HEAD", StringComparison.Ordinal) >= 0;
+                row.Head = IsHead(commit.Decorations);
 
                 // Above the dot: lines passing by, and lines that end here (this commit is their parent).
                 for (int i = 0; i < expected.Count; i++)
@@ -92,6 +92,21 @@ namespace Orbiters.UnitGit.Editor
                 rows.Add(row);
             }
             return rows;
+        }
+
+        /// <summary>
+        /// Whether Git's decorations (%D) mark the checked-out commit: "HEAD -> main", or a bare "HEAD" for a detached HEAD.
+        /// "origin/HEAD" (a remote's default branch) is not the checked-out commit.
+        /// </summary>
+        internal static bool IsHead(string decorations)
+        {
+            if (string.IsNullOrEmpty(decorations)) return false;
+            foreach (string raw in decorations.Split(','))
+            {
+                string part = raw.Trim();
+                if (part == "HEAD" || part.StartsWith("HEAD -> ", StringComparison.Ordinal)) return true;
+            }
+            return false;
         }
 
         /// <summary>A row with only the lines passing by (a release row between two commits).</summary>

@@ -67,6 +67,28 @@ namespace Orbiters.UnitGit.Editor
         // Files Git still tracks although the ignore rules now leave them out (MCB version downloads).
         public List<string> TrackedIgnoredDownloads = new List<string>();
         public long TrackedIgnoredDownloadBytes;
+
+        // A commit checked out on its own ("git checkout --detach", Visit This Commit) instead of a branch. CurrentBranch is
+        // empty then, and nothing lists a branch as current.
+        public bool IsDetached;
+        public UnitGitCommit DetachedCommit; // the checked-out commit, when detached
+        public string PreviousBranch = string.Empty; // the branch checked out before it (Git's @{-1}), if it still exists
+        public string ReturnBranch = string.Empty; // the local branch "Back" goes to: the visit's own, else PreviousBranch
+        public int NewerCommits = -1; // commits on ReturnBranch after the checked-out commit; -1 when not counted
+    }
+
+    /// <summary>
+    /// A commit being visited and the way back: the branch to return to, where it pointed, and the shelf made before
+    /// visiting. Kept per project (<see cref="UnitGitSettings.Visit"/>), so it outlives domain reloads and restarts.
+    /// </summary>
+    [Serializable]
+    internal sealed class UnitGitVisit
+    {
+        public string branch = string.Empty;
+        public string branchTip = string.Empty; // full hash of the branch when the visit started
+        public string shelf = string.Empty; // the message of the shelf made before visiting; empty when nothing was shelved
+        public string commit = string.Empty; // the full hash visited last
+        public long started; // UTC ticks: Git state read before this still shows the branch
     }
 
     internal sealed class UnitGitBranch

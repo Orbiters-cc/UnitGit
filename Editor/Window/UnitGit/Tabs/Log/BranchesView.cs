@@ -48,12 +48,18 @@ namespace Orbiters.UnitGit.Editor
 
         private void FillBranches()
         {
-            var head = BranchTreeRow(UnitGitIconKind.Star, "HEAD", snapshot.CurrentBranch, 0, string.IsNullOrEmpty(logFilter.Branch) ? false : logFilter.Branch == snapshot.CurrentBranch, "ug-branch-row--head");
-            head.tooltip = "The checked-out branch: " + snapshot.CurrentBranch + ". Click to show only its history.";
+            // While visiting, HEAD is the visited commit itself: its history is "HEAD" for Git.
+            bool visiting = IsVisiting;
+            string headRef = visiting ? "HEAD" : snapshot.CurrentBranch;
+            var head = BranchTreeRow(UnitGitIconKind.Star, "HEAD", visiting ? "visiting " + snapshot.DetachedCommit.ShortHash : snapshot.CurrentBranch, 0,
+                !string.IsNullOrEmpty(logFilter.Branch) && logFilter.Branch == headRef, "ug-branch-row--head");
+            head.tooltip = visiting
+                ? "No branch is checked out: you are visiting " + snapshot.DetachedCommit.ShortHash + ". Click to show only its history."
+                : "The checked-out branch: " + snapshot.CurrentBranch + ". Click to show only its history.";
             head.RegisterCallback<MouseDownEvent>(evt =>
             {
-                if (evt.button != 0) return;
-                SetLogFilter(branch: logFilter.Branch == snapshot.CurrentBranch ? string.Empty : snapshot.CurrentBranch);
+                if (evt.button != 0 || string.IsNullOrEmpty(headRef)) return;
+                SetLogFilter(branch: logFilter.Branch == headRef ? string.Empty : headRef);
             });
             branchesListRoot.Add(head);
             AddBranchSection("Local", snapshot.Branches.Where(branch => !branch.IsRemote), BranchLocalFoldPref);

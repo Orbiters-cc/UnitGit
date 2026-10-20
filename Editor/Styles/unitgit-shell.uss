@@ -250,6 +250,12 @@
     color: #f0bd7e;
 }
 
+/* The branch "Back" returns to, at its latest commit, while a commit is visited: the same green as the Back button. */
+.ug-chip--return {
+    background-color: var(--ug-accent);
+    color: var(--ug-on-accent);
+}
+
 .ug-badge {
     height: 16px;
     min-width: 16px;
@@ -700,6 +706,99 @@
     flex-direction: row;
     align-items: center;
     flex-shrink: 0;
+}
+
+/* ---- Visiting a commit ------------------------------------------------------------------------------ */
+
+/* Between the top bar and the content while a commit is visited (a detached HEAD): the notice's shape, in HEAD's yellow. */
+.ug-visit {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    min-height: 36px;
+    margin: 6px 6px 0 6px;
+    padding: 4px 4px 4px 10px;
+    border-radius: 10px;
+    background-color: rgba(255, 196, 70, 0.1);
+}
+
+.ug-visit__icon {
+    width: 15px;
+    height: 15px;
+    margin-right: 8px;
+    --icon-color: #ffd06a;
+}
+
+.ug-visit__texts {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    flex-direction: row;
+    align-items: center;
+    overflow: hidden;
+}
+
+.ug-visit__title {
+    color: #ffd06a;
+    font-size: 12px;
+    -unity-font-style: bold;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.ug-visit__detail {
+    margin-left: 8px;
+    color: #bfae86;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.ug-visit .ug-button.ug-visit__button {
+    height: 26px;
+    min-height: 26px;
+    margin-left: 6px;
+    padding: 0 12px;
+}
+
+.ug-visit .ug-button--with-icon.ug-visit__button {
+    padding-left: 10px;
+}
+
+.ug-visit .ug-button--ghost .ug-button__label {
+    color: #e0cfa4;
+}
+
+.ug-visit .ug-button--ghost .unitgit-icon {
+    --icon-color: #e0cfa4;
+}
+
+.ug-visit .ug-button--ghost:hover {
+    background-color: rgba(255, 196, 70, 0.12);
+}
+
+/* The top bar's branch while visiting: no branch, the visited commit in HEAD's yellow. */
+.ug-branch-widget--visiting {
+    background-color: rgba(255, 196, 70, 0.1);
+}
+
+.ug-branch-widget--visiting:hover {
+    background-color: rgba(255, 196, 70, 0.16);
+}
+
+.ug-branch-widget--visiting .unitgit-icon {
+    --icon-color: #ffd06a;
+}
+
+.ug-branch-widget--visiting .ug-branch-widget__name {
+    color: #ffd06a;
+}
+
+.ug-branch-widget--visiting .ug-branch-widget__chevron {
+    --icon-color: #909090;
 }
 
 /* ---- Content ---------------------------------------------------------------------------------------- */

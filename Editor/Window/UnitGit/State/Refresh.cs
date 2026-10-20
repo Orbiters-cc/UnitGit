@@ -142,6 +142,9 @@ namespace Orbiters.UnitGit.Editor
             string projectRoot = gitService.ProjectRoot;
             string search = logSearch;
             int requestedHistoryLimit = historyLimit;
+            // Read before the worker starts (EditorPrefs is main-thread only); what was read before a visit began is older than it.
+            string visitBranch = UnitGitSettings.Visit?.branch;
+            long readStarted = DateTime.UtcNow.Ticks;
             UnitGitSnapshot previousSnapshot = snapshot;
             var filter = new UnitGitLogFilter { Branch = logFilter.Branch, Author = logFilter.Author, Since = logFilter.Since, Path = logFilter.Path };
             try
@@ -158,8 +161,8 @@ namespace Orbiters.UnitGit.Editor
                             {
                                 QueueConsoleLine("refresh", line);
                             }
-                        }, requestedHistoryLimit, () => requestId != refreshRequestId || logSearchDraft != search))
-                    .ContinueWith(task => QueueMainThreadAction(() => ApplySnapshotRefresh(requestId, task)));
+                        }, requestedHistoryLimit, () => requestId != refreshRequestId || logSearchDraft != search, visitBranch))
+                    .ContinueWith(task => QueueMainThreadAction(() => ApplySnapshotRefresh(requestId, task, readStarted)));
             }
             catch (Exception ex)
             {
@@ -174,13 +177,13 @@ namespace Orbiters.UnitGit.Editor
             string search,
             UnitGitLogFilter filter,
             UnitGitSnapshot previousSnapshot,
-            UnitGitProcessLogHandler logHandler, int historyLimit = 300, Func<bool> superseded = null)
+            UnitGitProcessLogHandler logHandler, int historyLimit = 300, Func<bool> superseded = null, string visitBranch = null)
         {
             var service = new UnitGitService(projectRoot);
             service.ProcessLogReceived = logHandler;
             bool wasSuperseded = false;
             service.ReadSuperseded = () => wasSuperseded = wasSuperseded || (superseded?.Invoke() ?? false);
-            UnitGitSnapshot nextSnapshot = service.BuildSnapshot(search, historyLimit, filter);
+            UnitGitSnapshot nextSnapshot = service.BuildSnapshot(search, historyLimit, filter, visitBranch);
             var result = new SnapshotRefreshResult
             {
                 Snapshot = nextSnapshot,
@@ -195,7 +198,7 @@ namespace Orbiters.UnitGit.Editor
             return result;
         }
 
-        private void ApplySnapshotRefresh(int requestId, Task<SnapshotRefreshResult> task)
+        private void ApplySnapshotRefresh(int requestId, Task<SnapshotRefreshResult> task, long readStarted)
         {
             if (this == null)
             {
@@ -234,6 +237,7 @@ namespace Orbiters.UnitGit.Editor
                 snapshot = task.Result.Snapshot;
                 ReconcileSnapshotSelection();
                 ReconcilePendingInclude();
+                ReconcileVisit(readStarted);
                 if (snapshot.HasRepository) RequestGitStorage(false);
             }
 

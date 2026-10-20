@@ -66,7 +66,9 @@ namespace Orbiters.UnitGit.Editor
             return BuildSnapshot(logSearch, historyLimit, null);
         }
 
-        public UnitGitSnapshot BuildSnapshot(string logSearch, int historyLimit, UnitGitLogFilter filter)
+        /// <param name="visitBranch">The branch a visit returns to (<see cref="UnitGitVisit.branch"/>): while HEAD is detached,
+        /// the snapshot counts the commits it has after HEAD. Empty: the branch checked out before HEAD was detached.</param>
+        public UnitGitSnapshot BuildSnapshot(string logSearch, int historyLimit, UnitGitLogFilter filter, string visitBranch = null)
         {
             var snapshot = new UnitGitSnapshot
             {
@@ -112,6 +114,7 @@ namespace Orbiters.UnitGit.Editor
             snapshot.Branches = GetBranches();
             snapshot.Remotes = GetRemoteNames();
             snapshot.Releases = UnitGitReleases.Load(ProjectRoot);
+            if (snapshot.IsDetached && snapshot.HasCommits) ReadDetachedHead(snapshot, visitBranch);
             if (snapshot.HasCommits)
             {
                 historyLimit = Math.Max(1, historyLimit);
@@ -143,6 +146,173 @@ namespace Orbiters.UnitGit.Editor
                 var file = new FileInfo(Path.Combine(ProjectRoot, path));
                 if (file.Exists) snapshot.TrackedIgnoredDownloadBytes += file.Length;
             }
+        }
+
+        // The visited commit, the branch to go back to and how far ahead of it that branch is: only while HEAD is detached.
+        private void ReadDetachedHead(UnitGitSnapshot snapshot, string visitBranch)
+        {
+            snapshot.DetachedCommit = ReadCommit("HEAD");
+            GitCommandResult previous = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--abbrev-ref", "@{-1}");
+            string previousBranch = previous.Success ? FirstNonEmptyLine(previous.StandardOutput) : string.Empty;
+            // A detached commit before this one prints nothing or a hash: only an existing local branch is a way back.
+            snapshot.PreviousBranch = IsLocalBranch(snapshot, previousBranch) ? previousBranch : string.Empty;
+            snapshot.ReturnBranch = IsLocalBranch(snapshot, visitBranch) ? visitBranch.Trim() : snapshot.PreviousBranch;
+            if (snapshot.ReturnBranch.Length == 0) return;
+            GitCommandResult newer = RunGit(DefaultTimeoutMilliseconds, "rev-list", "--count", "HEAD..refs/heads/" + snapshot.ReturnBranch, "--");
+            if (newer.Success && int.TryParse(FirstNonEmptyLine(newer.StandardOutput), NumberStyles.Integer, CultureInfo.InvariantCulture, out int count))
+                snapshot.NewerCommits = count;
+        }
+
+        private static bool IsLocalBranch(UnitGitSnapshot snapshot, string name)
+        {
+            return !string.IsNullOrWhiteSpace(name) && snapshot.Branches.Any(branch => !branch.IsRemote && branch.Name == name.Trim());
+        }
+
+        // One commit as the Log shows it, or null.
+        private UnitGitCommit ReadCommit(string revision)
+        {
+            var args = new List<string> { "log", "-1", "--date=relative", "--pretty=format:" + CommitLogFormat(true), revision, "--" };
+            GitCommandResult result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+            if (!result.Success)
+            {
+                // Older Git versions do not support the %(trailers) pretty-format placeholder.
+                args[3] = "--pretty=format:" + CommitLogFormat(false);
+                result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+            }
+
+            return result.Success ? ParseCommits(result.StandardOutput, string.Empty).FirstOrDefault() : null;
+        }
+
+        /// <summary>True when HEAD is a commit on its own rather than a branch (a visit, a rebase, another tool's checkout).</summary>
+        internal bool IsHeadDetached()
+        {
+            // Exit 1: HEAD is not a symbolic ref. A branch without commits yet is still a branch.
+            return RunGit(DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD").ExitCode == 1;
+        }
+
+        /// <summary>Files changed since the last commit: tracked ones (edited, staged, deleted…) and new, untracked ones.</summary>
+        internal GitCommandResult ReadChangeCount(out int tracked, out int untracked)
+        {
+            tracked = 0;
+            untracked = 0;
+            GitCommandResult status = RunGit(DefaultTimeoutMilliseconds, "status", "--porcelain=v1", "--untracked-files=normal");
+            if (!status.Success) return status;
+            foreach (string line in SplitLines(status.StandardOutput))
+            {
+                if (line.Length < 3) continue;
+                if (line.StartsWith("?? ", StringComparison.Ordinal)) untracked++;
+                else if (!line.StartsWith("!! ", StringComparison.Ordinal)) tracked++;
+            }
+
+            return status;
+        }
+
+        /// <summary>
+        /// Checks out one commit without moving any branch ("git checkout --detach"): every later commit stays on its branch
+        /// and in the Log. Local changes are shelved first under <paramref name="shelfMessage"/> (and come back if the checkout
+        /// fails), or with <paramref name="discardChanges"/> tracked files are put back (new files stay). With neither, edited
+        /// tracked files refuse the visit.
+        /// </summary>
+        internal GitCommandResult VisitCommit(string revision, string shelfMessage, bool discardChanges, out bool shelved)
+        {
+            shelved = false;
+            GitCommandResult resolved = ResolveCommit(revision, out string hash);
+            if (!resolved.Success) return resolved;
+            if (UnitGitConflicts.Operation(ProjectRoot, out string current) != UnitGitOperation.None)
+                return Failure("Finish or cancel the current operation first (" + current + ").");
+
+            GitCommandResult changes = ReadChangeCount(out int tracked, out int untracked);
+            if (!changes.Success) return changes;
+            if (!string.IsNullOrWhiteSpace(shelfMessage) && tracked + untracked > 0)
+            {
+                GitCommandResult shelve = ShelveAll(shelfMessage);
+                if (!shelve.Success) return shelve;
+                shelved = true;
+            }
+            else if (!discardChanges && tracked > 0)
+            {
+                return Failure(Plural(tracked, "file") + " changed since the last commit. Shelve or commit them before visiting " + ShortHash(hash) + ".");
+            }
+
+            GitCommandResult checkout = discardChanges && !shelved
+                ? RunGit(LongTimeoutMilliseconds, "checkout", "--force", "--detach", hash)
+                : RunGit(LongTimeoutMilliseconds, "checkout", "--detach", hash);
+            if (checkout.Success || !shelved) return checkout;
+
+            // Nothing was visited: the shelved changes go back where they were.
+            GitCommandResult restored = UnshelveByMessage(shelfMessage);
+            shelved = !restored.Success;
+            return Failure(checkout.Message + (restored.Success
+                ? "\nYour changes are back."
+                : "\nYour changes stay on the shelf ‘" + shelfMessage.Trim() + "’: " + restored.Message));
+        }
+
+        /// <summary>
+        /// Back to <paramref name="branch"/> after a visit, then brings back the shelf made before visiting
+        /// (<paramref name="shelfMessage"/>), if any. Tracked files changed while visiting refuse it unless
+        /// <paramref name="discardChanges"/> puts them back; new files always stay (nothing is cleaned).
+        /// </summary>
+        internal GitCommandResult ReturnFromVisit(string branch, bool discardChanges, string shelfMessage)
+        {
+            branch = (branch ?? string.Empty).Trim();
+            if (branch.Length == 0 || branch.StartsWith("-", StringComparison.Ordinal))
+                return Failure("Choose the branch to go back to.");
+            if (!RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch).Success)
+                return Failure("Branch ‘" + branch + "’ no longer exists. Choose another branch to go back to.");
+            if (UnitGitConflicts.Operation(ProjectRoot, out string current) != UnitGitOperation.None)
+                return Failure("Finish or cancel the current operation first (" + current + ").");
+
+            if (!discardChanges)
+            {
+                GitCommandResult changes = ReadChangeCount(out int tracked, out _);
+                if (!changes.Success) return changes;
+                if (tracked > 0)
+                    return Failure(Plural(tracked, "file") + " changed while visiting. Discard or shelve them before going back to ‘" + branch + "’.");
+            }
+
+            // "--" after the branch: a file called like the branch is never read as a path to restore.
+            GitCommandResult checkout = discardChanges
+                ? RunGit(LongTimeoutMilliseconds, "checkout", "--force", branch, "--")
+                : RunGit(LongTimeoutMilliseconds, "checkout", branch, "--");
+            if (!checkout.Success || FindShelf(shelfMessage).Length == 0) return checkout;
+
+            GitCommandResult restored = UnshelveByMessage(shelfMessage);
+            return restored.Success
+                ? checkout
+                : Failure("Back on ‘" + branch + "’, but your changes from before the visit stay on the shelf ‘" + shelfMessage.Trim() + "’: " + restored.Message);
+        }
+
+        /// <summary>The shelf ("stash@{n}") made with exactly this message, or empty.</summary>
+        internal string FindShelf(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message)) return string.Empty;
+            GitCommandResult list = RunGit(DefaultTimeoutMilliseconds, "stash", "list", "--format=%gd%x1f%gs");
+            return list.Success ? FindShelfIn(list.StandardOutput, message) : string.Empty;
+        }
+
+        // In "stash list --format=%gd%x1f%gs" output: "stash@{0}<US>On main: message" (a detached HEAD says "On (no branch)").
+        internal static string FindShelfIn(string stashList, string message)
+        {
+            if (string.IsNullOrWhiteSpace(message)) return string.Empty;
+            string wanted = message.Trim();
+            foreach (string line in SplitLines(stashList))
+            {
+                int separator = line.IndexOf(FieldSeparator);
+                if (separator <= 0) continue;
+                string subject = line.Substring(separator + 1).TrimEnd();
+                if (subject == wanted || subject.EndsWith(": " + wanted, StringComparison.Ordinal)) return line.Substring(0, separator);
+            }
+
+            return string.Empty;
+        }
+
+        // Pops the shelf with this message. A conflict keeps the shelf and leaves the conflicted files, as "stash pop" does.
+        private GitCommandResult UnshelveByMessage(string message)
+        {
+            string shelf = FindShelf(message);
+            return shelf.Length == 0
+                ? Failure("The shelf ‘" + message.Trim() + "’ was not found.")
+                : RunGit(LongTimeoutMilliseconds, "stash", "pop", shelf);
         }
 
         /// <summary>
@@ -1816,7 +1986,8 @@ namespace Orbiters.UnitGit.Editor
 
                 string fullRef = fields[0];
                 string name = fields[1];
-                if (name.EndsWith("/HEAD", StringComparison.OrdinalIgnoreCase))
+                // "(HEAD detached at abc1234)" is no branch: a detached HEAD shows as UnitGitSnapshot.IsDetached instead.
+                if (name.EndsWith("/HEAD", StringComparison.OrdinalIgnoreCase) || !fullRef.StartsWith("refs/", StringComparison.Ordinal))
                 {
                     continue;
                 }
@@ -1960,6 +2131,14 @@ namespace Orbiters.UnitGit.Editor
             int bracketIndex = text.IndexOf(" [", StringComparison.Ordinal);
             string trackingPart = bracketIndex >= 0 ? text.Substring(bracketIndex) : string.Empty;
             string branchPart = bracketIndex >= 0 ? text.Substring(0, bracketIndex) : text;
+
+            // A detached HEAD (a visited commit, a rebase): no branch at all, so every "detached HEAD" fallback applies.
+            if (branchPart == "HEAD (no branch)")
+            {
+                snapshot.IsDetached = true;
+                snapshot.CurrentBranch = string.Empty;
+                return;
+            }
 
             int upstreamIndex = branchPart.IndexOf("...", StringComparison.Ordinal);
             const string noCommitsPrefix = "No commits yet on ";

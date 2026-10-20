@@ -274,22 +274,38 @@ namespace Orbiters.UnitGit.Editor
             row.tooltip = null;
         }
 
-        // Branch and tag labels, as chips: the checked-out branch first, then local, remote and tags.
-        private static void BindRefs(VisualElement refs, string decorations)
+        // Branch and tag labels, as chips: the checked-out branch first, then local, remote and tags. While a commit is
+        // visited, it says so, and the branch "Back" returns to stands out at its latest commit.
+        private void BindRefs(VisualElement refs, string decorations)
         {
             refs.Clear();
             if (string.IsNullOrWhiteSpace(decorations)) return;
+            string returnBranch = snapshot != null && snapshot.IsDetached ? snapshot.ReturnBranch : string.Empty;
             int shown = 0, hidden = 0;
             foreach (string raw in decorations.Split(','))
             {
                 string part = raw.Trim();
-                if (part.Length == 0 || part == "HEAD") continue;
-                string variant = "local", text = part;
-                if (part.StartsWith("HEAD -> ", StringComparison.Ordinal)) { variant = "head"; text = part.Substring(8); }
+                if (part.Length == 0) continue;
+                string variant = "local", text = part, tooltip = part;
+                bool returnTip = false;
+                if (part == "HEAD")
+                {
+                    // A detached HEAD: the commit being visited.
+                    variant = "head";
+                    text = "Visiting";
+                    tooltip = "HEAD: the commit you are visiting. Every branch keeps its later commits.";
+                }
+                else if (part.StartsWith("HEAD -> ", StringComparison.Ordinal)) { variant = "head"; text = part.Substring(8); }
                 else if (part.StartsWith("tag: ", StringComparison.Ordinal)) { variant = "tag"; text = part.Substring(5); }
-                else if (part.Contains("/")) variant = "remote";
+                else if (part.Contains("/") && !(returnBranch.Length > 0 && part == returnBranch)) variant = "remote";
+                if (variant == "local" && returnBranch.Length > 0 && part == returnBranch)
+                {
+                    returnTip = true;
+                    tooltip = part + ": its latest commit, where ‘Back to " + part + "’ returns.";
+                }
                 if (shown >= 3) { hidden++; continue; }
-                var chip = UnitGitUi.Chip(text.Length > 26 ? text.Substring(0, 24) + "…" : text, variant, part);
+                var chip = UnitGitUi.Chip(text.Length > 26 ? text.Substring(0, 24) + "…" : text, variant, tooltip);
+                if (returnTip) chip.AddToClassList("ug-chip--return");
                 refs.Add(chip);
                 shown++;
             }

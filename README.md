@@ -1,5 +1,19 @@
 # Unit Git
 
+## 0.2.10 — 2026-10-20
+
+- **Visit This Commit** (a commit's or release's right-click menu in the Log) checks out an older commit to look
+  around, without dropping anything: every later commit stays on its branch and in the Log. Unsaved scenes are offered
+  for saving first, and local changes are shelved and come back with the branch. A yellow bar under the top bar says
+  which commit you are visiting and how many newer commits its branch has; **Back to ‘main’** checks the branch out
+  again at its latest commit (files Unity re-saved meanwhile can be discarded or shelved), **New Branch Here…** keeps
+  working from there. The visit survives Unity reloads and restarts.
+- While visiting, commits that would belong to no branch (commit, amend, cherry-pick, revert, merge, release
+  checkpoints from other tools) are refused with the way to keep them: a new branch here.
+- A checked-out commit without a branch (Git's detached HEAD) shows as **Visiting abc1234** in the top bar and the Log
+  instead of a "HEAD (no branch)" branch that could not be used; the Log's ring marks the checked-out commit only, not
+  a remote's default branch (`origin/HEAD`).
+
 ## 0.2.9 — 2026-10-19
 
 - Requires Orbiters Toolkit 0.4.0.
@@ -77,8 +91,9 @@ The window follows JetBrains IDEs' Git tool window, in the style of the other Or
   initials, dates and hashes, search (text or hash) and Branch, User and Date filters; older commits load as you
   scroll. Columns give way to the subject when the log is narrow. The selected commit's files (status colours, tree;
   a double click opens its diff in a window) sit above its message, author, date, hash (copy) and parents (a click
-  selects them). A commit's menu: New branch from here, Cherry-Pick, Revert, Rename, Reset current branch to here
-  (Soft, Mixed, Keep, Hard), Squash selected commits, copy hash or subject.
+  selects them). A commit's menu: New branch from here, Visit this commit (look at an older version, then back to
+  the latest), Cherry-Pick, Revert, Rename, Reset current branch to here (Soft, Mixed, Keep, Hard), Squash selected
+  commits, copy hash or subject.
 - **Shelf**: changes set aside (Git stashes) with their files and diff; **Shelve changes** asks for a name,
   **Unshelve** brings them back and removes the shelf, **Apply** keeps it, **Delete** asks first.
 - **Console**: every Git command and its output, newest at the bottom, filterable and copyable.

@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using UnityEditor;
+using UnityEngine;
 
 namespace Orbiters.UnitGit.Editor
 {
@@ -9,6 +10,7 @@ namespace Orbiters.UnitGit.Editor
         private const string PrefPrefix = "Orbiters.UnitGit.Project.";
         private const string AvatarUploadCommitKey = "AvatarUpload.Commit";
         private const string AvatarUploadReleaseRowKey = "AvatarUpload.ReleaseRow";
+        private const string VisitKey = "Visit";
 
         public static bool AvatarUploadCommitEnabled
         {
@@ -39,6 +41,30 @@ namespace Orbiters.UnitGit.Editor
         {
             get { return Math.Max(1, EditorPrefs.GetInt(BuildProjectKey("Backups.Keep"), 10)); }
             set { EditorPrefs.SetInt(BuildProjectKey("Backups.Keep"), Math.Max(1, value)); }
+        }
+
+        /// <summary>The commit being visited and the way back, or null when no visit is under way.</summary>
+        public static UnitGitVisit Visit
+        {
+            get
+            {
+                string json = EditorPrefs.GetString(BuildProjectKey(VisitKey), string.Empty);
+                if (string.IsNullOrWhiteSpace(json)) return null;
+                try
+                {
+                    var visit = JsonUtility.FromJson<UnitGitVisit>(json);
+                    return visit != null && !string.IsNullOrWhiteSpace(visit.commit) ? visit : null;
+                }
+                catch (ArgumentException)
+                {
+                    return null;
+                }
+            }
+            set
+            {
+                if (value == null) EditorPrefs.DeleteKey(BuildProjectKey(VisitKey));
+                else EditorPrefs.SetString(BuildProjectKey(VisitKey), JsonUtility.ToJson(value));
+            }
         }
 
         private static bool GetBool(string key, bool defaultValue)

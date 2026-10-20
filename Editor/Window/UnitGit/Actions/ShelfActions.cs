@@ -36,6 +36,7 @@ namespace Orbiters.UnitGit.Editor
                 ShowToast(branch == null ? "Select a branch first." : "Choose a branch other than the current one.", error: true);
                 return;
             }
+            if (RefuseWhileVisiting("a merge commit")) return;
 
             string current = snapshot?.CurrentBranch;
             RunAction("merge " + branch.Name, () => UnitGitConflicts.MergeBranch(gitService, branch.Name), result =>

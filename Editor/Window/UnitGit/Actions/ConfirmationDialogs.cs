@@ -73,6 +73,11 @@ namespace Orbiters.UnitGit.Editor
                 return snapshot.CurrentBranch;
             }
 
+            if (IsVisiting)
+            {
+                return "none (visiting " + snapshot.DetachedCommit.ShortHash + ")";
+            }
+
             return "(none)";
         }
 

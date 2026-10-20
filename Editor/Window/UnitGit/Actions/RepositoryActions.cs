@@ -142,6 +142,7 @@ namespace Orbiters.UnitGit.Editor
             string message = string.IsNullOrWhiteSpace(commitMessage) ? string.Empty : commitMessage.Trim();
             bool amend = commitAmend;
             int included = IncludedCount();
+            if (RefuseWhileVisiting(amend ? "the amended commit" : "this commit")) return;
             if (message.Length == 0)
             {
                 ShowToast("Write a commit message first.", error: true);
