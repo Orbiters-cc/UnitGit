@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using UnityEditor;
@@ -26,7 +27,19 @@ namespace Orbiters.UnitGit.Editor
         // The visit ends through Back, which says itself what became of the shelf.
         private bool visitReturning;
 
-        private bool IsVisiting => snapshot != null && snapshot.IsDetached && snapshot.DetachedCommit != null;
+        // What a visit or Back is checked against before anything is asked, read off the main thread.
+        private sealed class VisitFacts
+        {
+            public UnitGitHeadState Head;
+            public int Tracked;
+            public int Untracked;
+            public List<string> InTheWay = new List<string>(); // new files where the target has its own: Git will not check out over them
+            public List<string> Ignored = new List<string>(); // ignored files the target has its own copy of: Git overwrites them
+            public int LeftBehind; // commits on the visited HEAD that no branch has
+        }
+
+        // A rebase or a bisect also detaches HEAD: those belong to Git (the Conflicts tab, "git bisect"), not to a visit.
+        private bool IsVisiting => snapshot != null && snapshot.IsDetached && snapshot.DetachedCommit != null && snapshot.DetachedBy.Length == 0;
 
         private string VisitedShortHash => snapshot?.DetachedCommit?.ShortHash ?? "a commit";
 
@@ -60,8 +73,7 @@ namespace Orbiters.UnitGit.Editor
         {
             if (visitBanner == null) return;
             bool ready = snapshot != null && snapshot.HasRepository && snapshot.HasCommits && string.IsNullOrWhiteSpace(snapshot.LastError);
-            // A rebase also detaches HEAD: the Conflicts tab shows that one.
-            bool visiting = ready && IsVisiting && UnitGitConflicts.Operation(gitService.ProjectRoot, out _) != UnitGitOperation.Rebase;
+            bool visiting = ready && IsVisiting;
             UnitGitCommit commit = pendingVisit ?? (visiting ? snapshot.DetachedCommit : null);
             bool show = pendingReturnBranch != null || commit != null;
             visitBanner.style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
@@ -80,7 +92,7 @@ namespace Orbiters.UnitGit.Editor
 
             visitTitle.text = "Visiting " + commit.ShortHash;
             string branch = pendingVisit != null ? string.Empty : snapshot.ReturnBranch;
-            var parts = new System.Collections.Generic.List<string>();
+            var parts = new List<string>();
             if (!string.IsNullOrWhiteSpace(commit.Subject)) parts.Add(Shorten(commit.Subject, 80));
             if (!string.IsNullOrWhiteSpace(commit.RelativeDate)) parts.Add(commit.RelativeDate);
             if (pendingVisit != null) parts.Add("checking out…");
@@ -122,6 +134,19 @@ namespace Orbiters.UnitGit.Editor
                 return false;
             }
 
+            if (UnitGitConflicts.IsBisecting(gitService.ProjectRoot))
+            {
+                ShowToast("A bisect is under way: finish it first (git bisect reset).", error: true);
+                return false;
+            }
+
+            // Leaving Play mode reloads scripts, which would stop Git midway through the files.
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                ShowToast("Leave Play mode first: Git rewrites the project's files.", error: true);
+                return false;
+            }
+
             return true;
         }
 
@@ -137,10 +162,20 @@ namespace Orbiters.UnitGit.Editor
 
         private static string Files(int count) => count + " file" + (count == 1 ? string.Empty : "s");
 
-        private static string ChangedWhileVisitingText(int tracked, string visited)
+        // Shelving is the default (Enter) and Escape cancels: discarding is never one key press away.
+        private static UnitGitVisitChangesChoice AskChangedWhileVisiting(string title, int tracked, int inTheWay, string visited, string target)
         {
-            return Files(tracked) + " changed while you were visiting " + visited + ". Unity re-saves some files when it opens an older version.\n\n" +
-                   "Discard Changes puts them back as they were committed (new files stay). Shelve Them keeps them on the shelf.";
+            return UnitGitVisitChecks.ChangesChoice(EditorUtility.DisplayDialogComplex(title, UnitGitVisitChecks.ChangedWhileVisitingText(tracked, inTheWay, visited, target),
+                UnitGitVisitChecks.ShelveButton, UnitGitVisitChecks.CancelButton, UnitGitVisitChecks.DiscardButton));
+        }
+
+        // Commits made on a visited commit belong to no branch: keeping them comes first (Enter), Escape cancels.
+        private bool LeaveCommitsBehind(string title, int count, string leaving)
+        {
+            if (count <= 0) return true;
+            int choice = EditorUtility.DisplayDialogComplex(title, UnitGitVisitChecks.CommitsLeftBehindText(count, leaving), "New Branch Here…", "Cancel", "Leave Them Behind");
+            if (choice == 0) PromptCreateBranchFrom(snapshot?.DetachedCommit?.FullHash);
+            return choice == 2;
         }
 
         private void VisitCommit(UnitGitCommit commit)
@@ -148,18 +183,35 @@ namespace Orbiters.UnitGit.Editor
             if (commit == null || string.IsNullOrWhiteSpace(commit.FullHash) || !CanStartVisitAction()) return;
             if (!SaveOpenWork()) return;
             string root = gitService.ProjectRoot;
-            UnitGitHeadState head = null;
-            int tracked = 0, untracked = 0;
+            string hash = commit.FullHash;
+            string visited = UnitGitSettings.Visit?.commit;
+            // The running versions come from the Package Manager (main thread only), what the commit holds from Git.
+            List<UnitGitToolPackage> tools = UnitGitVisitChecks.ToolPackages(root);
+            var facts = new VisitFacts();
             ReadForPrompt(() =>
             {
                 var service = new UnitGitService(root);
-                GitCommandResult state = service.ReadHeadState(out head);
-                return state.Success ? service.ReadChangeCount(out tracked, out untracked) : state;
-            }, _ => ConfirmVisit(commit, head, tracked, untracked));
+                GitCommandResult state = service.ReadHeadState(out facts.Head);
+                if (!state.Success) return state;
+                GitCommandResult changes = service.ReadChangeCount(out facts.Tracked, out facts.Untracked);
+                if (!changes.Success) return changes;
+                foreach (UnitGitToolPackage tool in tools)
+                {
+                    tool.AtHead = service.ReadFileAt("HEAD", tool.PackageJson);
+                    tool.AtTarget = service.ReadFileAt(hash, tool.PackageJson);
+                }
+
+                GitCommandResult way = service.ReadFilesInTheWay(hash, out facts.InTheWay, out facts.Ignored);
+                if (!way.Success) return way;
+                if (!string.IsNullOrEmpty(facts.Head.BranchRef)) return changes;
+                GitCommandResult behind = service.ReadCommitsOnNoBranch(visited, out facts.LeftBehind);
+                return behind.Success ? changes : behind;
+            }, _ => ConfirmVisit(commit, facts, tools));
         }
 
-        private void ConfirmVisit(UnitGitCommit commit, UnitGitHeadState head, int tracked, int untracked)
+        private void ConfirmVisit(UnitGitCommit commit, VisitFacts facts, List<UnitGitToolPackage> tools)
         {
+            UnitGitHeadState head = facts.Head;
             if (head == null || !CanStartVisitAction()) return;
             if (head.Head == commit.FullHash)
             {
@@ -167,17 +219,30 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
+            string title = "Visit " + commit.ShortHash;
             UnitGitVisit visit = UnitGitSettings.Visit;
+            bool fromBranch = !string.IsNullOrEmpty(head.BranchRef);
+            // The commit may hold another Unit Git, or none: what that means, and the way back without it.
+            string returnBranch = fromBranch ? head.BranchName : !string.IsNullOrWhiteSpace(visit?.branch) ? visit.branch : snapshot.ReturnBranch;
+            bool shelving = fromBranch ? facts.Tracked + facts.Untracked > 0 : visit != null && HasShelf(visit.shelf);
+            string tooling = UnitGitVisitChecks.ToolChangeText(tools, commit.ShortHash, returnBranch, shelving);
+            if (tooling != null && !EditorUtility.DisplayDialog(title, tooling, "Visit Anyway", "Cancel")) return;
+            // Git overwrites ignored files without asking, and never shelves them: only once the user knows which.
+            bool overwriteIgnored = facts.Ignored.Count > 0;
+            if (overwriteIgnored && !EditorUtility.DisplayDialog(title, UnitGitVisitChecks.IgnoredInTheWayText(facts.Ignored, commit.ShortHash), "Visit Anyway", "Cancel"))
+                return;
+            if (!fromBranch && !LeaveCommitsBehind(title, facts.LeftBehind, "visiting " + commit.ShortHash)) return;
+
             string shelf = null;
             bool discard = false;
             bool keepShelf = false;
-            if (!string.IsNullOrEmpty(head.BranchRef))
+            if (fromBranch)
             {
                 // From a branch: its changes are set aside, and come back with it.
-                int changes = tracked + untracked;
+                int changes = facts.Tracked + facts.Untracked;
                 if (changes > 0)
                 {
-                    if (!EditorUtility.DisplayDialog("Visit " + commit.ShortHash,
+                    if (!EditorUtility.DisplayDialog(title,
                             Files(changes) + " changed since your last commit on ‘" + head.BranchName + "’. Unit Git shelves them before visiting " +
                             commit.ShortHash + " and brings them back when you go back to ‘" + head.BranchName + "’.",
                             "Shelve " + changes + (changes == 1 ? " Change" : " Changes") + " and Visit", "Cancel"))
@@ -197,13 +262,14 @@ namespace Orbiters.UnitGit.Editor
             else
             {
                 // Already visiting: the way back stays the first visit's. What changed while visiting goes, or is shelved apart.
-                if (tracked > 0)
+                if (facts.Tracked + facts.InTheWay.Count > 0)
                 {
-                    int choice = EditorUtility.DisplayDialogComplex("Visit " + commit.ShortHash, ChangedWhileVisitingText(tracked, VisitedShortHash),
-                        "Discard Changes", "Cancel", "Shelve Them");
-                    if (choice == 1) return;
-                    discard = choice == 0;
-                    if (choice == 2) shelf = "Changed while visiting " + VisitedShortHash + " (" + Timestamp() + ")";
+                    switch (AskChangedWhileVisiting(title, facts.Tracked, facts.InTheWay.Count, VisitedShortHash, commit.ShortHash))
+                    {
+                        case UnitGitVisitChangesChoice.Cancel: return;
+                        case UnitGitVisitChangesChoice.Discard: discard = true; break;
+                        default: shelf = "Changed while visiting " + VisitedShortHash + " (" + Timestamp() + ")"; break;
+                    }
                 }
 
                 visit = visit ?? new UnitGitVisit { branch = snapshot.ReturnBranch, started = DateTime.UtcNow.Ticks };
@@ -217,7 +283,7 @@ namespace Orbiters.UnitGit.Editor
             string shelfMessage = shelf;
             bool discardChanges = discard;
             bool shelved = false;
-            RunAction("visit " + commit.ShortHash, () => gitService.VisitCommit(hash, shelfMessage, discardChanges, out shelved), result =>
+            RunAction("visit " + commit.ShortHash, () => gitService.VisitCommit(hash, shelfMessage, discardChanges, out shelved, overwriteIgnored), result =>
             {
                 visitActionDone = DateTime.UtcNow.Ticks;
                 if (shelved) ForgetShelfFiles();
@@ -227,8 +293,7 @@ namespace Orbiters.UnitGit.Editor
                     var current = UnitGitSettings.Visit;
                     if (current != null) { current.shelf = string.Empty; UnitGitSettings.Visit = current; }
                 }
-                AssetDatabase.Refresh();
-            }, "Visiting " + commit.ShortHash + "…", "Visiting " + commit.ShortHash + ": every later commit stays on its branch");
+            }, "Visiting " + commit.ShortHash + "…", "Visiting " + commit.ShortHash + ": every later commit stays on its branch", holdEditor: true);
             UpdateTopBar();
         }
 
@@ -258,23 +323,39 @@ namespace Orbiters.UnitGit.Editor
         {
             if (!IsVisiting || !CanStartVisitAction() || !SaveOpenWork()) return;
             string root = gitService.ProjectRoot;
-            int tracked = 0;
-            ReadForPrompt(() => new UnitGitService(root).ReadChangeCount(out tracked, out _), _ => ConfirmReturn(branch, tracked));
+            string visited = UnitGitSettings.Visit?.commit;
+            var facts = new VisitFacts();
+            ReadForPrompt(() =>
+            {
+                var service = new UnitGitService(root);
+                // A branch gone or a merge under way is said before anything is asked or shelved.
+                GitCommandResult open = service.CanReturnTo(branch);
+                if (!open.Success) return open;
+                GitCommandResult changes = service.ReadChangeCount(out facts.Tracked, out facts.Untracked);
+                if (!changes.Success) return changes;
+                GitCommandResult way = service.ReadFilesInTheWay("refs/heads/" + branch, out facts.InTheWay, out facts.Ignored);
+                if (!way.Success) return way;
+                GitCommandResult behind = service.ReadCommitsOnNoBranch(visited, out facts.LeftBehind);
+                return behind.Success ? changes : behind;
+            }, _ => ConfirmReturn(branch, facts));
         }
 
-        private void ConfirmReturn(string branch, int tracked)
+        private void ConfirmReturn(string branch, VisitFacts facts)
         {
             if (!IsVisiting || !CanStartVisitAction()) return;
             string visited = VisitedShortHash;
+            string title = "Back to ‘" + branch + "’";
+            if (!LeaveCommitsBehind(title, facts.LeftBehind, "going back to ‘" + branch + "’")) return;
             bool discard = false;
             string changedShelf = null;
-            if (tracked > 0)
+            if (facts.Tracked + facts.InTheWay.Count > 0)
             {
-                int choice = EditorUtility.DisplayDialogComplex("Back to ‘" + branch + "’", ChangedWhileVisitingText(tracked, visited),
-                    "Discard Changes", "Cancel", "Shelve Them");
-                if (choice == 1) return;
-                discard = choice == 0;
-                if (choice == 2) changedShelf = "Changed while visiting " + visited + " (" + Timestamp() + ")";
+                switch (AskChangedWhileVisiting(title, facts.Tracked, facts.InTheWay.Count, visited, "‘" + branch + "’"))
+                {
+                    case UnitGitVisitChangesChoice.Cancel: return;
+                    case UnitGitVisitChangesChoice.Discard: discard = true; break;
+                    default: changedShelf = "Changed while visiting " + visited + " (" + Timestamp() + ")"; break;
+                }
             }
 
             // The shelf made before visiting goes back onto its own branch only.
@@ -283,21 +364,14 @@ namespace Orbiters.UnitGit.Editor
             visitReturning = restore.Length > 0;
             pendingReturnBranch = branch;
             bool discardChanges = discard;
-            RunAction("back to " + branch, () =>
-            {
-                if (changedShelf != null)
-                {
-                    GitCommandResult shelve = gitService.ShelveAll(changedShelf);
-                    if (!shelve.Success) return shelve;
-                }
-                return gitService.ReturnFromVisit(branch, discardChanges, restore);
-            }, result =>
+            // The service shelves what changed while visiting only once the way back is known to be open.
+            RunAction("back to " + branch, () => gitService.ReturnFromVisit(branch, discardChanges, restore, changedShelf), result =>
             {
                 visitActionDone = DateTime.UtcNow.Ticks;
                 ForgetShelfFiles();
-                AssetDatabase.Refresh();
                 if (result != null && !result.Success && HasConflictWork()) SetActiveTab(UnitGitTab.Conflicts);
-            }, "Going back to ‘" + branch + "’…", "Back on ‘" + branch + "’" + (restore.Length > 0 ? ", with your changes from before the visit" : string.Empty));
+            }, "Going back to ‘" + branch + "’…", "Back on ‘" + branch + "’" + (restore.Length > 0 ? ", with your changes from before the visit" : string.Empty),
+                holdEditor: true);
             UpdateTopBar();
         }
 

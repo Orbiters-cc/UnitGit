@@ -43,7 +43,10 @@ namespace Orbiters.UnitGit.Editor
         // The notification a successful action shows, if any.
         private string busySuccess;
 
-        private void RunAction(string label, Func<GitCommandResult> action, Action<GitCommandResult> onComplete = null, string working = null, string success = null)
+        /// <param name="holdEditor">The action checks out other files (a visit, Back): no asset refresh or script reload may
+        /// stop Git midway, and the project is refreshed once it is done (<see cref="UnitGitCheckoutHold"/>).</param>
+        private void RunAction(string label, Func<GitCommandResult> action, Action<GitCommandResult> onComplete = null, string working = null, string success = null,
+            bool holdEditor = false)
         {
             // A commit waiting for its files goes first: nothing may change the repository under it.
             if (busy || commitWhenIncluded != null)
@@ -57,6 +60,7 @@ namespace Orbiters.UnitGit.Editor
             AppendConsole(label, "started");
             RefreshTopBar();
             EnsureEditorUpdatePump();
+            if (holdEditor) UnitGitCheckoutHold.Begin();
 
             Task.Run(() =>
                 {
@@ -68,6 +72,7 @@ namespace Orbiters.UnitGit.Editor
                     finally
                     {
                         gitService.ProcessLogReceived = null;
+                        if (holdEditor) UnitGitCheckoutHold.WorkEnded();
                     }
                 })
                 .ContinueWith(task => QueueMainThreadAction(() => CompleteGitAction(label, task, onComplete)));

@@ -152,6 +152,7 @@ namespace Orbiters.UnitGit.Editor
         private void ReadDetachedHead(UnitGitSnapshot snapshot, string visitBranch)
         {
             snapshot.DetachedCommit = ReadCommit("HEAD");
+            snapshot.DetachedBy = UnitGitConflicts.DetachedBy(ProjectRoot);
             GitCommandResult previous = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--abbrev-ref", "@{-1}");
             string previousBranch = previous.Success ? FirstNonEmptyLine(previous.StandardOutput) : string.Empty;
             // A detached commit before this one prints nothing or a hash: only an existing local branch is a way back.
@@ -190,12 +191,15 @@ namespace Orbiters.UnitGit.Editor
             return RunGit(DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD").ExitCode == 1;
         }
 
-        /// <summary>Files changed since the last commit: tracked ones (edited, staged, deleted…) and new, untracked ones.</summary>
+        /// <summary>
+        /// Files changed since the last commit: tracked ones (edited, staged, deleted…) and new, untracked ones. Submodules are
+        /// left out: neither shelving nor discarding touches what is checked out in them.
+        /// </summary>
         internal GitCommandResult ReadChangeCount(out int tracked, out int untracked)
         {
             tracked = 0;
             untracked = 0;
-            GitCommandResult status = RunGit(DefaultTimeoutMilliseconds, "status", "--porcelain=v1", "--untracked-files=normal");
+            GitCommandResult status = ReadChangeStatus();
             if (!status.Success) return status;
             foreach (string line in SplitLines(status.StandardOutput))
             {
@@ -207,79 +211,227 @@ namespace Orbiters.UnitGit.Editor
             return status;
         }
 
+        private GitCommandResult ReadChangeStatus()
+        {
+            return RunGit(DefaultTimeoutMilliseconds, "status", "--porcelain=v1", "--untracked-files=normal", "--ignore-submodules=all");
+        }
+
+        /// <summary>
+        /// Files Git does not track that stand where <paramref name="target"/> has files of its own. Git refuses to check out
+        /// over new files (<paramref name="untracked"/>) but overwrites ignored ones without a word (<paramref name="ignored"/>),
+        /// and the next checkout of a commit without them deletes them.
+        /// </summary>
+        internal GitCommandResult ReadFilesInTheWay(string target, out List<string> untracked, out List<string> ignored)
+        {
+            untracked = new List<string>();
+            ignored = new List<string>();
+            // What the target has and HEAD has not: the only files a checkout writes where Git tracks nothing yet.
+            GitCommandResult incoming = RunGit(DefaultTimeoutMilliseconds, "diff-tree", "-r", "-z", "--name-only", "--no-renames", "--diff-filter=A", "HEAD", target, "--");
+            if (!incoming.Success) return incoming;
+            List<string> paths = SplitNul(incoming.StandardOutput);
+            if (paths.Count == 0) return incoming;
+            GitCommandResult others = RunGit(DefaultTimeoutMilliseconds, "ls-files", "-z", "--others", "--exclude-standard");
+            if (!others.Success) return others;
+            // "--directory": a folder ignored as a whole (Library/) is one line, not every file in it.
+            GitCommandResult ignoredOthers = RunGit(DefaultTimeoutMilliseconds, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory");
+            if (!ignoredOthers.Success) return ignoredOthers;
+            string root = ProjectRoot;
+            Func<string, bool> exists = path => File.Exists(Path.Combine(root, path));
+            untracked.AddRange(UnitGitVisitChecks.InTheWay(paths, SplitNul(others.StandardOutput), exists));
+            ignored.AddRange(UnitGitVisitChecks.InTheWay(paths, SplitNul(ignoredOthers.StandardOutput), exists));
+            return incoming;
+        }
+
+        /// <summary>
+        /// Commits HEAD has that no branch, tag or remote branch has (after <paramref name="since"/>, the visited commit, when
+        /// given): checking out a branch leaves them to Git's reflog, out of the Log.
+        /// </summary>
+        internal GitCommandResult ReadCommitsOnNoBranch(string since, out int count)
+        {
+            count = 0;
+            // Not "--all": a shelf made here (refs/stash) would count as keeping them.
+            var args = new List<string> { "rev-list", "--count", "HEAD", "--not", "--branches", "--tags", "--remotes" };
+            if (!string.IsNullOrWhiteSpace(since) && ResolveCommit(since, out string hash).Success) args.Add(hash);
+            args.Add("--");
+            GitCommandResult result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+            if (result.Success) int.TryParse(FirstNonEmptyLine(result.StandardOutput), NumberStyles.Integer, CultureInfo.InvariantCulture, out count);
+            return result;
+        }
+
+        /// <summary>A file as committed ("HEAD", a hash), its path relative to the project; null when that commit has none.</summary>
+        internal string ReadFileAt(string revision, string path)
+        {
+            GitCommandResult blob = RunGit(DefaultTimeoutMilliseconds, "cat-file", "blob", revision + ":./" + path);
+            return blob.Success ? blob.StandardOutput : null;
+        }
+
         /// <summary>
         /// Checks out one commit without moving any branch ("git checkout --detach"): every later commit stays on its branch
         /// and in the Log. Local changes are shelved first under <paramref name="shelfMessage"/> (and come back if the checkout
         /// fails), or with <paramref name="discardChanges"/> tracked files are put back (new files stay). With neither, edited
-        /// tracked files refuse the visit.
+        /// tracked files refuse the visit. From a branch every change is shelved; from a visited commit only what stands in the
+        /// way, and other new files stay as with Discard. Ignored files the commit has its own copy of refuse the visit unless
+        /// <paramref name="overwriteIgnored"/>: Git would overwrite them, and never shelves them.
         /// </summary>
-        internal GitCommandResult VisitCommit(string revision, string shelfMessage, bool discardChanges, out bool shelved)
+        internal GitCommandResult VisitCommit(string revision, string shelfMessage, bool discardChanges, out bool shelved, bool overwriteIgnored = false)
         {
             shelved = false;
             GitCommandResult resolved = ResolveCommit(revision, out string hash);
             if (!resolved.Success) return resolved;
-            if (UnitGitConflicts.Operation(ProjectRoot, out string current) != UnitGitOperation.None)
-                return Failure("Finish or cancel the current operation first (" + current + ").");
+            GitCommandResult running = RefuseRunningOperation();
+            if (running != null) return running;
 
             GitCommandResult changes = ReadChangeCount(out int tracked, out int untracked);
             if (!changes.Success) return changes;
-            if (!string.IsNullOrWhiteSpace(shelfMessage) && tracked + untracked > 0)
+            GitCommandResult way = ReadFilesInTheWay(hash, out List<string> inTheWay, out List<string> ignored);
+            if (!way.Success) return way;
+            if (ignored.Count > 0 && !overwriteIgnored)
+                return Failure(Plural(ignored.Count, "ignored file") + " would be overwritten by " + ShortHash(hash) + "'s copy (" +
+                               UnitGitVisitChecks.ListPaths(ignored, 3, ", ") + "). Move them out of the project first.");
+
+            bool fromBranch = !IsHeadDetached();
+            string left = null;
+            if (!string.IsNullOrWhiteSpace(shelfMessage) && (fromBranch ? tracked + untracked : tracked + inTheWay.Count) > 0)
             {
-                GitCommandResult shelve = ShelveAll(shelfMessage);
+                GitCommandResult shelve = fromBranch ? ShelveAll(shelfMessage) : ShelveChanges(shelfMessage, inTheWay);
                 if (!shelve.Success) return shelve;
                 shelved = true;
+                left = ReadChangeStatus().StandardOutput;
             }
             else if (!discardChanges && tracked > 0)
             {
                 return Failure(Plural(tracked, "file") + " changed since the last commit. Shelve or commit them before visiting " + ShortHash(hash) + ".");
             }
+            else if (!discardChanges && inTheWay.Count > 0)
+            {
+                return Failure(NewFilesInTheWay(inTheWay, ShortHash(hash)));
+            }
 
-            GitCommandResult checkout = discardChanges && !shelved
-                ? RunGit(LongTimeoutMilliseconds, "checkout", "--force", "--detach", hash)
-                : RunGit(LongTimeoutMilliseconds, "checkout", "--detach", hash);
-            if (checkout.Success || !shelved) return checkout;
+            var checkout = new List<string> { "checkout" };
+            if (discardChanges && !shelved) checkout.Add("--force");
+            // Under the check above: Git refuses rather than overwrite an ignored file (with --force it overwrites anyway).
+            if (!overwriteIgnored) checkout.Add("--no-overwrite-ignore");
+            checkout.Add("--detach");
+            checkout.Add(hash);
+            GitCommandResult result = RunGit(LongTimeoutMilliseconds, checkout.ToArray());
+            if (result.Success || !shelved) return result;
 
             // Nothing was visited: the shelved changes go back where they were.
-            GitCommandResult restored = UnshelveByMessage(shelfMessage);
-            shelved = !restored.Success;
-            return Failure(checkout.Message + (restored.Success
-                ? "\nYour changes are back."
-                : "\nYour changes stay on the shelf ‘" + shelfMessage.Trim() + "’: " + restored.Message));
+            return PutShelfBack(result, shelfMessage, left, out shelved);
         }
 
         /// <summary>
         /// Back to <paramref name="branch"/> after a visit, then brings back the shelf made before visiting
-        /// (<paramref name="shelfMessage"/>), if any. Tracked files changed while visiting refuse it unless
-        /// <paramref name="discardChanges"/> puts them back; new files always stay (nothing is cleaned).
+        /// (<paramref name="shelfMessage"/>), if any. What changed while visiting refuses it, unless <paramref name="changedShelf"/>
+        /// shelves it (edited files and the new files in the branch's way) or <paramref name="discardChanges"/> puts it back;
+        /// other new files always stay (nothing is cleaned). Nothing is shelved before the way back is known to be open.
         /// </summary>
-        internal GitCommandResult ReturnFromVisit(string branch, bool discardChanges, string shelfMessage)
+        internal GitCommandResult ReturnFromVisit(string branch, bool discardChanges, string shelfMessage, string changedShelf = null)
         {
             branch = (branch ?? string.Empty).Trim();
-            if (branch.Length == 0 || branch.StartsWith("-", StringComparison.Ordinal))
-                return Failure("Choose the branch to go back to.");
-            if (!RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch).Success)
-                return Failure("Branch ‘" + branch + "’ no longer exists. Choose another branch to go back to.");
-            if (UnitGitConflicts.Operation(ProjectRoot, out string current) != UnitGitOperation.None)
-                return Failure("Finish or cancel the current operation first (" + current + ").");
+            GitCommandResult open = CanReturnTo(branch);
+            if (!open.Success) return open;
 
-            if (!discardChanges)
+            GitCommandResult changes = ReadChangeCount(out int tracked, out _);
+            if (!changes.Success) return changes;
+            GitCommandResult way = ReadFilesInTheWay("refs/heads/" + branch, out List<string> inTheWay, out _);
+            if (!way.Success) return way;
+            bool shelved = false;
+            string left = null;
+            if (!string.IsNullOrWhiteSpace(changedShelf) && tracked + inTheWay.Count > 0)
             {
-                GitCommandResult changes = ReadChangeCount(out int tracked, out _);
-                if (!changes.Success) return changes;
-                if (tracked > 0)
-                    return Failure(Plural(tracked, "file") + " changed while visiting. Discard or shelve them before going back to ‘" + branch + "’.");
+                GitCommandResult shelve = ShelveChanges(changedShelf, inTheWay);
+                if (!shelve.Success) return shelve;
+                shelved = true;
+                left = ReadChangeStatus().StandardOutput;
+            }
+            else if (!discardChanges && tracked > 0)
+            {
+                return Failure(Plural(tracked, "file") + " changed while visiting. Discard or shelve them before going back to ‘" + branch + "’.");
+            }
+            else if (!discardChanges && inTheWay.Count > 0)
+            {
+                return Failure(NewFilesInTheWay(inTheWay, "‘" + branch + "’"));
             }
 
             // "--" after the branch: a file called like the branch is never read as a path to restore.
-            GitCommandResult checkout = discardChanges
+            GitCommandResult checkout = discardChanges && !shelved
                 ? RunGit(LongTimeoutMilliseconds, "checkout", "--force", branch, "--")
                 : RunGit(LongTimeoutMilliseconds, "checkout", branch, "--");
-            if (!checkout.Success || FindShelf(shelfMessage).Length == 0) return checkout;
+            if (!checkout.Success) return shelved ? PutShelfBack(checkout, changedShelf, left, out _) : checkout;
+            if (FindShelf(shelfMessage).Length == 0) return checkout;
 
             GitCommandResult restored = UnshelveByMessage(shelfMessage);
             return restored.Success
                 ? checkout
                 : Failure("Back on ‘" + branch + "’, but your changes from before the visit stay on the shelf ‘" + shelfMessage.Trim() + "’: " + restored.Message);
+        }
+
+        /// <summary>Whether Back can check out <paramref name="branch"/>: it exists, and no merge, rebase or bisect is under way.</summary>
+        internal GitCommandResult CanReturnTo(string branch)
+        {
+            branch = (branch ?? string.Empty).Trim();
+            if (branch.Length == 0 || branch.StartsWith("-", StringComparison.Ordinal))
+                return Failure("Choose the branch to go back to.");
+            GitCommandResult exists = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch);
+            if (!exists.Success)
+                return Failure("Branch ‘" + branch + "’ no longer exists. Choose another branch to go back to.");
+            return RefuseRunningOperation() ?? exists;
+        }
+
+        // A merge, cherry-pick, revert, rebase or bisect under way: a checkout would leave it half done.
+        private GitCommandResult RefuseRunningOperation()
+        {
+            if (UnitGitConflicts.Operation(ProjectRoot, out string current) != UnitGitOperation.None)
+                return Failure("Finish or cancel the current operation first (" + current + ").");
+            return UnitGitConflicts.IsBisecting(ProjectRoot) ? Failure("Finish the bisect first (git bisect reset).") : null;
+        }
+
+        /// <summary>
+        /// Shelves the edited tracked files and the new files given, and no other new file: those stay on disk. The new files
+        /// are staged first, so a plain "stash push" takes them.
+        /// </summary>
+        internal GitCommandResult ShelveChanges(string message, IList<string> newFiles)
+        {
+            bool staged = newFiles != null && newFiles.Count > 0;
+            if (staged)
+            {
+                GitCommandResult add = RunGitForPaths(LongTimeoutMilliseconds, newFiles, "add");
+                if (!add.Success) return add;
+            }
+
+            GitCommandResult shelve = RunGit(LongTimeoutMilliseconds, "stash", "push", "-m", message.Trim());
+            if (!shelve.Success && staged) RunGitForPaths(LongTimeoutMilliseconds, newFiles, "reset", "-q");
+            return shelve;
+        }
+
+        // After a failed checkout the shelf goes back only onto the files as they were (before: what Git saw right after
+        // shelving). Git LFS without its objects, or Git stopped midway, leaves part of the other commit written, and a
+        // shelf popped onto that mixes the two versions.
+        private GitCommandResult PutShelfBack(GitCommandResult checkout, string shelfMessage, string before, out bool stillShelved)
+        {
+            stillShelved = true;
+            string shelf = "‘" + shelfMessage.Trim() + "’";
+            GitCommandResult state = ReadChangeStatus();
+            if (!state.Success || before == null || state.StandardOutput != before)
+                return Failure(checkout.Message + "\nGit stopped partway, so some files are already the other version. Your changes stay on the shelf " + shelf +
+                               ": roll the changed files back in Local Changes first, then bring the shelf back.");
+            GitCommandResult restored = UnshelveByMessage(shelfMessage);
+            stillShelved = !restored.Success;
+            return Failure(checkout.Message + (restored.Success ? "\nYour changes are back." : "\nYour changes stay on the shelf " + shelf + ": " + restored.Message));
+        }
+
+        private static string NewFilesInTheWay(IList<string> paths, string target)
+        {
+            bool one = paths.Count == 1;
+            return Plural(paths.Count, "new file") + (one ? " is" : " are") + " where " + target + " has its own (" + UnitGitVisitChecks.ListPaths(paths, 3, ", ") +
+                   "). Discard or shelve " + (one ? "it" : "them") + " first.";
+        }
+
+        // "-z" output: one path per NUL, exactly as Git has it (no quoting).
+        private static List<string> SplitNul(string text)
+        {
+            return (text ?? string.Empty).Split('\0').Select(entry => entry.Trim('\r', '\n')).Where(entry => entry.Length > 0).ToList();
         }
 
         /// <summary>The shelf ("stash@{n}") made with exactly this message, or empty.</summary>

@@ -98,6 +98,22 @@ namespace Orbiters.UnitGit.Editor
             return UnitGitOperation.None;
         }
 
+        /// <summary>A "git bisect" under way: it checks out commits on its own, and "git bisect reset" ends it.</summary>
+        public static bool IsBisecting(string root)
+        {
+            string log = UnitGitPaths.GitPath(root, "BISECT_LOG");
+            return log != null && File.Exists(log);
+        }
+
+        /// <summary>
+        /// What Git itself does on a commit without a branch: "Rebasing", "Bisecting", or empty (a visited commit, another
+        /// tool's checkout). Those two belong to Git: going "Back" to a branch would leave them half done.
+        /// </summary>
+        public static string DetachedBy(string root)
+        {
+            return Operation(root, out _) == UnitGitOperation.Rebase ? "Rebasing" : IsBisecting(root) ? "Bisecting" : string.Empty;
+        }
+
         private static string FirstLine(string path)
         {
             try

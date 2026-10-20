@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using UnityEditor;
 
 namespace Orbiters.UnitGit.Editor
 {
@@ -77,19 +78,43 @@ namespace Orbiters.UnitGit.Editor
         };
 
         private static readonly HashSet<string> EnsuredRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private const string EnsuredSessionKey = "Orbiters.UnitGit.DefaultRulesEnsured";
 
         /// <summary>
         /// Adds the default rules that came after a repository was created, once per project and editor session: today the
-        /// MCB download rules, for projects that use MCB.
+        /// MCB download rules, for projects that use MCB. Never while HEAD is a commit of its own (a visit, a rebase): the
+        /// .gitignore is that commit's then, and the rules would show as a change made while visiting.
         /// </summary>
         internal static void EnsureDefaultRules(string projectRoot)
         {
             lock (EnsuredRoots)
             {
+                if (EnsuredRoots.Contains(projectRoot)) return;
+            }
+            bool mcb = Directory.Exists(Path.Combine(projectRoot, "Assets", "MCB"));
+            // Checked again once a branch is back.
+            if (mcb && new UnitGitService(projectRoot).IsHeadDetached()) return;
+            lock (EnsuredRoots)
+            {
                 if (!EnsuredRoots.Add(projectRoot)) return;
             }
-            if (!Directory.Exists(Path.Combine(projectRoot, "Assets", "MCB"))) return;
-            AppendMissing(Path.Combine(projectRoot, ".gitignore"), McbDownloadPatterns);
+            if (mcb) AppendMissing(Path.Combine(projectRoot, ".gitignore"), McbDownloadPatterns);
+        }
+
+        // The set empties on every domain reload: the editor's own project is carried over them in SessionState, so "once
+        // per editor session" holds (SessionState is main-thread only, the set is read by background refreshes).
+        [InitializeOnLoadMethod]
+        private static void KeepEnsuredAcrossReloads()
+        {
+            string project = UnitGitService.GetUnityProjectRoot();
+            if (SessionState.GetBool(EnsuredSessionKey, false))
+            {
+                lock (EnsuredRoots) EnsuredRoots.Add(project);
+            }
+            AssemblyReloadEvents.beforeAssemblyReload += () =>
+            {
+                lock (EnsuredRoots) SessionState.SetBool(EnsuredSessionKey, EnsuredRoots.Contains(project));
+            };
         }
 
         private static bool AppendMissing(string path, string[] patterns)

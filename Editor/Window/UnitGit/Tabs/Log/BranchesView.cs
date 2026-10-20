@@ -48,13 +48,17 @@ namespace Orbiters.UnitGit.Editor
 
         private void FillBranches()
         {
-            // While visiting, HEAD is the visited commit itself: its history is "HEAD" for Git.
+            // While visiting (or rebasing, bisecting), HEAD is a commit of its own: its history is "HEAD" for Git.
             bool visiting = IsVisiting;
-            string headRef = visiting ? "HEAD" : snapshot.CurrentBranch;
-            var head = BranchTreeRow(UnitGitIconKind.Star, "HEAD", visiting ? "visiting " + snapshot.DetachedCommit.ShortHash : snapshot.CurrentBranch, 0,
+            bool detached = snapshot.IsDetached;
+            string gitWork = snapshot.DetachedBy.ToLowerInvariant();
+            string headRef = detached ? "HEAD" : snapshot.CurrentBranch;
+            string headText = visiting ? "visiting " + snapshot.DetachedCommit.ShortHash : detached ? (gitWork.Length > 0 ? gitWork : "detached HEAD") : snapshot.CurrentBranch;
+            var head = BranchTreeRow(UnitGitIconKind.Star, "HEAD", headText, 0,
                 !string.IsNullOrEmpty(logFilter.Branch) && logFilter.Branch == headRef, "ug-branch-row--head");
             head.tooltip = visiting
                 ? "No branch is checked out: you are visiting " + snapshot.DetachedCommit.ShortHash + ". Click to show only its history."
+                : detached ? "No branch is checked out" + (gitWork.Length > 0 ? ": Git is " + gitWork + "." : ".") + " Click to show only its history."
                 : "The checked-out branch: " + snapshot.CurrentBranch + ". Click to show only its history.";
             head.RegisterCallback<MouseDownEvent>(evt =>
             {

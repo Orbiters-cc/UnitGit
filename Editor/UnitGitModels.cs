@@ -75,6 +75,7 @@ namespace Orbiters.UnitGit.Editor
         public string PreviousBranch = string.Empty; // the branch checked out before it (Git's @{-1}), if it still exists
         public string ReturnBranch = string.Empty; // the local branch "Back" goes to: the visit's own, else PreviousBranch
         public int NewerCommits = -1; // commits on ReturnBranch after the checked-out commit; -1 when not counted
+        public string DetachedBy = string.Empty; // "Rebasing", "Bisecting": Git's own detached HEAD, which is no visit
     }
 
     /// <summary>

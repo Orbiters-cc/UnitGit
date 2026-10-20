@@ -13,6 +13,21 @@
 - A checked-out commit without a branch (Git's detached HEAD) shows as **Visiting abc1234** in the top bar and the Log
   instead of a "HEAD (no branch)" branch that could not be used; the Log's ring marks the checked-out commit only, not
   a remote's default branch (`origin/HEAD`).
+- Before visiting a commit that holds another Unit Git or Orbiters Toolkit (or none), Unit Git says so, what it means
+  and how to come back from a terminal, and lets you cancel.
+- Ignored files the visited commit has its own copy of (committed once, ignored later) are listed first: the visit
+  would overwrite them and going back delete them, so it only goes ahead when you say so.
+- While Git checks out a visit or goes back, Unity neither refreshes nor reloads scripts (a reload stopped Git midway),
+  quitting asks first and Play mode waits; the project is refreshed once at the end.
+- Going back no longer fails on new files Unity made where the branch has its own (folder `.meta` files, settings):
+  they are offered for shelving or discarding with the edited files. **Shelve Them** is the default button, and shelves
+  only those files: other new files stay on disk.
+- Going back checks the branch and any merge, rebase or bisect before shelving anything, and asks before leaving behind
+  commits made on the visited commit by other tools (**New Branch Here…** keeps them).
+- A checkout that fails halfway (Git LFS files that cannot be downloaded) keeps your changes on the shelf instead of
+  putting them back onto half-changed files.
+- Submodules no longer count as files changed while visiting, a rebase or `git bisect` is no longer shown as a visit,
+  and the MCB download rules are no longer added to the visited commit's `.gitignore` after a reload.
 
 ## 0.2.9 — 2026-10-19
 

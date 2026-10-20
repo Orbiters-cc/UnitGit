@@ -290,10 +290,13 @@ namespace Orbiters.UnitGit.Editor
                 bool returnTip = false;
                 if (part == "HEAD")
                 {
-                    // A detached HEAD: the commit being visited.
+                    // A detached HEAD: the commit being visited, or where Git is rebasing or bisecting.
                     variant = "head";
-                    text = "Visiting";
-                    tooltip = "HEAD: the commit you are visiting. Every branch keeps its later commits.";
+                    bool visiting = IsVisiting;
+                    text = visiting ? "Visiting" : "HEAD";
+                    tooltip = visiting ? "HEAD: the commit you are visiting. Every branch keeps its later commits."
+                        : snapshot != null && snapshot.DetachedBy.Length > 0 ? "HEAD: Git is " + snapshot.DetachedBy.ToLowerInvariant() + " here."
+                        : "HEAD: the checked-out commit, on no branch.";
                 }
                 else if (part.StartsWith("HEAD -> ", StringComparison.Ordinal)) { variant = "head"; text = part.Substring(8); }
                 else if (part.StartsWith("tag: ", StringComparison.Ordinal)) { variant = "tag"; text = part.Substring(5); }
