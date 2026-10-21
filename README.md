@@ -1,6 +1,6 @@
 # Unit Git
 
-## 0.2.10 — 2026-10-20
+## 0.2.10 — 2026-10-21
 
 - **Visit This Commit** (a commit's or release's right-click menu in the Log) checks out an older commit to look
   around, without dropping anything: every later commit stays on its branch and in the Log. Unsaved scenes are offered
